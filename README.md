@@ -1,12 +1,29 @@
-# Webstir Backend Package (Stub)
+# @webstir-io/webstir-backend
 
-This directory reserves the namespace for the future `@webstir-io/webstir-backend` package. The package is currently disabled in the release automation:
+Default backend module provider for Webstir workspaces. The package compiles backend TypeScript sources, produces server bundles, and implements the module-provider contract consumed by the Webstir CLI.
 
-- Manifest and lockfile exist so the metadata service can discover the package.
-- Build and publish scripts are placeholders; the CLI skips the backend while the `isEnabled` flag remains `false`.
+## Install
 
-When backend automation work begins:
+```bash
+npm install @webstir-io/webstir-backend
+```
 
-1. Replace the placeholder npm scripts with real build, test, and pack commands.
-2. Populate the package sources (`src/`) and ensure `npm run build` emits the distributable artifacts.
-3. Update `Framework/Packaging/framework-packages.json`, `FrameworkPackageDescriptor`, and the release automation to enable the package.
+## Development
+
+```bash
+npm ci
+npm run build
+npm test
+```
+
+## Scripts
+
+| Command        | Description                                   |
+| -------------- | --------------------------------------------- |
+| `npm run build` | Compile TypeScript sources to `dist/`.        |
+| `npm run test`  | Build and execute the backend test suite.     |
+| `npm run clean` | Remove build artifacts.                       |
+
+## License
+
+MIT © Electric Coding LLC and contributors

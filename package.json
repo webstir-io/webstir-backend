@@ -20,6 +20,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "npm run build",
     "clean": "rm -rf dist"
   },
   "files": [
@@ -29,6 +30,10 @@
     "node": ">=20.18.1"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/webstir-io/webstir-backend"
+  },
   "dependencies": {
     "@webstir-io/module-contract": "file:../Contracts/module-contract",
     "glob": "^10.4.1"
