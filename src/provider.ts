@@ -183,7 +183,15 @@ async function runTypeCheck(tsconfigPath: string, env: Record<string, string | u
             stderr += chunk.toString();
         });
 
-        child.on('error', reject);
+        child.on('error', (err: any) => {
+            const code = (err && typeof err === 'object') ? (err.code as string | undefined) : undefined;
+            if (code === 'ENOENT') {
+                diagnostics.push({ severity: 'warn', message: 'TypeScript compiler (tsc) not found in PATH; skipping type-check.' });
+                resolve();
+                return;
+            }
+            reject(err);
+        });
         child.on('close', (code) => {
             if (code === 0) {
                 resolve();
