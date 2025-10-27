@@ -16,15 +16,24 @@
       "import": "./dist/provider.js",
       "default": "./dist/provider.js"
     },
+    "./watch": {
+      "types": "./dist/watch.d.ts",
+      "import": "./dist/watch.js",
+      "default": "./dist/watch.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build",
-    "clean": "rm -rf dist"
+    "test": "npm run build && node -e \"const { spawnSync } = require('node:child_process'); const glob = require('glob'); const files = glob.sync('tests/**/*.test.js'); if (!files.length) { console.error('No backend test files found'); process.exit(1); } const result = spawnSync(process.execPath, ['--test', ...files], { stdio: 'inherit' }); process.exit(result.status ?? 1);\"",
+    "clean": "rm -rf dist",
+    "prepare": "npm run build",
+    "watch": "npm run build && node -e \"import('./dist/watch.js').then(m=>m.startBackendWatch({workspaceRoot:process.cwd(),env:{WEBSTIR_MODULE_MODE:'build'}}));\"",
+    "smoke": "npm run build && node scripts/smoke.mjs"
   },
   "files": [
-    "dist"
+    "dist",
+    "templates"
   ],
   "engines": {
     "node": ">=20.18.1"
@@ -36,6 +45,7 @@
   },
   "dependencies": {
     "@webstir-io/module-contract": "^0.1.4",
+    "esbuild": "^0.25.10",
     "glob": "^10.4.1"
   },
   "devDependencies": {

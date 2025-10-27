@@ -1,6 +1,10 @@
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
+import { fileURLToPath } from 'node:url';
+
+import { build as esbuild } from 'esbuild';
 
 import { glob } from 'glob';
 import type {
@@ -9,7 +13,8 @@ import type {
     ModuleBuildResult,
     ModuleDiagnostic,
     ModuleProvider,
-    ResolvedModuleWorkspace
+    ResolvedModuleWorkspace,
+    ModuleAsset
 } from '@webstir-io/module-contract';
 
 import packageJson from '../package.json' with { type: 'json' };
@@ -51,17 +56,61 @@ export const backendProvider: ModuleProvider = {
 
         const diagnostics: ModuleDiagnostic[] = [];
 
-        await runTsc(tsconfigPath, options.env, diagnostics);
+        const incremental = options.incremental === true;
+        const mode = normalizeMode(options.env?.WEBSTIR_MODULE_MODE);
+        console.info(`[webstir-backend] ${mode}:start`);
+
+        // 1) Type-check with TSC (no emit) if a tsconfig exists.
+        console.info(`[webstir-backend] ${mode}:tsc start`);
+        if (shouldTypeCheck(mode, options.env)) {
+            await runTypeCheck(tsconfigPath, options.env, diagnostics);
+        } else {
+            diagnostics.push({ severity: 'info', message: '[webstir-backend] type-check skipped by WEBSTIR_BACKEND_TYPECHECK' });
+        }
+        console.info(`[webstir-backend] ${mode}:tsc done`);
+
+        // 2) Transpile/bundle with esbuild based on mode.
+        const entryPoints = await discoverEntryPoints(paths.sourceRoot);
+        if (entryPoints.length === 0) {
+            diagnostics.push({ severity: 'warn', message: `No backend entry points found under ${paths.sourceRoot} (expected index.* or functions/*/index.* or jobs/*/index.*).` });
+        }
+        console.info(`[webstir-backend] ${mode}:esbuild start`);
+        await runEsbuild({
+            sourceRoot: paths.sourceRoot,
+            buildRoot: paths.buildRoot,
+            tsconfigPath,
+            mode,
+            env: options.env,
+            incremental,
+            diagnostics,
+            entryPoints
+        });
+        console.info(`[webstir-backend] ${mode}:esbuild done`);
 
         const artifacts = await collectArtifacts(paths.buildRoot);
         const manifest = createManifest(paths.buildRoot, artifacts, diagnostics);
 
+        console.info(`[webstir-backend] ${mode}:complete (entries=${manifest.entryPoints.length})`);
         return {
             artifacts,
             manifest
         };
+    },
+    async getScaffoldAssets() {
+        return await getScaffoldAssets();
     }
 };
+
+function normalizeMode(rawMode: unknown): 'build' | 'publish' | 'test' {
+    if (typeof rawMode !== 'string') {
+        return 'build';
+    }
+    const normalized = rawMode.toLowerCase();
+    if (normalized === 'publish' || normalized === 'test') {
+        return normalized;
+    }
+    return 'build';
+}
 
 async function collectArtifacts(buildRoot: string): Promise<ModuleArtifact[]> {
     const matches = await glob('**/*.js', {
@@ -105,17 +154,17 @@ function createManifest(buildRoot: string, artifacts: readonly ModuleArtifact[],
     };
 }
 
-async function runTsc(tsconfigPath: string, env: Record<string, string | undefined>, diagnostics: ModuleDiagnostic[]): Promise<void> {
+async function runTypeCheck(tsconfigPath: string, env: Record<string, string | undefined>, diagnostics: ModuleDiagnostic[]): Promise<void> {
     if (!existsSync(tsconfigPath)) {
         diagnostics.push({
             severity: 'warn',
-            message: `TypeScript config not found at ${tsconfigPath}; skipping compile.`
+            message: `TypeScript config not found at ${tsconfigPath}; skipping type-check.`
         });
         return;
     }
 
     await new Promise<void>((resolve, reject) => {
-        const child = spawn('tsc', ['-p', tsconfigPath], {
+        const child = spawn('tsc', ['-p', tsconfigPath, '--noEmit'], {
             stdio: 'pipe',
             env: {
                 ...process.env,
@@ -141,23 +190,168 @@ async function runTsc(tsconfigPath: string, env: Record<string, string | undefin
             } else {
                 diagnostics.push({
                     severity: 'error',
-                    message: `Backend TypeScript compilation failed (exit code ${code}).`,
+                    message: `Type checking failed (exit code ${code}).`,
                     file: tsconfigPath
                 });
-                if (stderr) {
-                    diagnostics.push({
-                        severity: 'error',
-                        message: stderr.trim()
-                    });
+                if (stderr.trim()) {
+                    diagnostics.push({ severity: 'error', message: stderr.trim() });
                 }
-                if (stdout) {
-                    diagnostics.push({
-                        severity: 'info',
-                        message: stdout.trim()
-                    });
+                if (stdout.trim()) {
+                    diagnostics.push({ severity: 'info', message: stdout.trim() });
                 }
-                reject(new Error('TypeScript compilation failed.'));
+                reject(new Error('Type checking failed.'));
             }
         });
     });
+}
+
+function shouldTypeCheck(mode: 'build' | 'publish' | 'test', env: Record<string, string | undefined>): boolean {
+    if (mode === 'publish') {
+        return true;
+    }
+    const flag = env?.WEBSTIR_BACKEND_TYPECHECK;
+    if (typeof flag === 'string' && flag.toLowerCase() === 'skip') {
+        return false;
+    }
+    return true;
+}
+
+interface BuildOptions {
+    readonly sourceRoot: string;
+    readonly buildRoot: string;
+    readonly tsconfigPath: string;
+    readonly mode: 'build' | 'publish' | 'test';
+    readonly env: Record<string, string | undefined>;
+    readonly incremental: boolean;
+    readonly diagnostics: ModuleDiagnostic[];
+    readonly entryPoints: readonly string[];
+}
+
+async function runEsbuild(options: BuildOptions): Promise<void> {
+    const { sourceRoot, buildRoot, tsconfigPath, mode, env, diagnostics, entryPoints } = options;
+    if (!entryPoints || entryPoints.length === 0) {
+        return;
+    }
+
+    const isProduction = mode === 'publish';
+    const nodeEnv = env?.NODE_ENV ?? (isProduction ? 'production' : 'development');
+
+    const define: Record<string, string> = {
+        'process.env.NODE_ENV': JSON.stringify(nodeEnv)
+    };
+
+    const start = performance.now();
+    try {
+        if (isProduction) {
+            const result = await esbuild({
+                entryPoints: entryPoints as string[],
+                bundle: true,
+                packages: 'external',
+                platform: 'node',
+                target: 'node20',
+                format: 'esm',
+                minify: true,
+                sourcemap: false,
+                legalComments: 'none',
+                outdir: buildRoot,
+                outbase: sourceRoot,
+                entryNames: '[dir]/[name]',
+                tsconfig: existsSync(tsconfigPath) ? tsconfigPath : undefined,
+                define,
+                logLevel: 'silent',
+                metafile: true
+            });
+
+            const warnCount = result.warnings?.length ?? 0;
+            for (const w of result.warnings ?? []) {
+                diagnostics.push({ severity: 'warn', message: formatEsbuildMessage(w) });
+            }
+            const end = performance.now();
+            diagnostics.push({ severity: 'info', message: `[webstir-backend] publish:esbuild completed in ${(end - start).toFixed(1)}ms with ${warnCount} warning(s).` });
+        } else {
+            const result = await esbuild({
+                entryPoints: entryPoints as string[],
+                bundle: false,
+                platform: 'node',
+                target: 'node20',
+                format: 'esm',
+                sourcemap: true,
+                outdir: buildRoot,
+                outbase: sourceRoot,
+                tsconfig: existsSync(tsconfigPath) ? tsconfigPath : undefined,
+                define,
+                logLevel: 'silent'
+            });
+
+            const warnCount = result.warnings?.length ?? 0;
+            for (const w of result.warnings ?? []) {
+                diagnostics.push({ severity: 'warn', message: formatEsbuildMessage(w) });
+            }
+            const end = performance.now();
+            diagnostics.push({ severity: 'info', message: `[webstir-backend] ${mode}:esbuild completed in ${(end - start).toFixed(1)}ms with ${warnCount} warning(s).` });
+        }
+    } catch (error) {
+        const end = performance.now();
+        if (isEsbuildFailure(error)) {
+            for (const e of error.errors ?? []) {
+                diagnostics.push({ severity: 'error', message: formatEsbuildMessage(e) });
+            }
+            for (const w of error.warnings ?? []) {
+                diagnostics.push({ severity: 'warn', message: formatEsbuildMessage(w) });
+            }
+        } else if (error instanceof Error) {
+            diagnostics.push({ severity: 'error', message: error.message });
+        } else {
+            diagnostics.push({ severity: 'error', message: String(error) });
+        }
+        diagnostics.push({ severity: 'info', message: `[webstir-backend] ${mode}:esbuild failed after ${(end - start).toFixed(1)}ms.` });
+        throw new Error('esbuild failed.');
+    }
+}
+
+async function discoverEntryPoints(sourceRoot: string): Promise<string[]> {
+    const patterns = [
+        'index.{ts,tsx,js,mjs}',
+        'functions/*/index.{ts,tsx,js,mjs}',
+        'jobs/*/index.{ts,tsx,js,mjs}'
+    ];
+    const entries = new Set<string>();
+    for (const pattern of patterns) {
+        const matches = await glob(pattern, { cwd: sourceRoot, nodir: true, dot: false });
+        for (const rel of matches) {
+            entries.add(path.join(sourceRoot, rel));
+        }
+    }
+    return Array.from(entries);
+}
+
+function isEsbuildFailure(error: unknown): error is { errors?: readonly any[]; warnings?: readonly any[] } {
+    return typeof error === 'object' && error !== null && ('errors' in (error as any) || 'warnings' in (error as any));
+}
+
+function formatEsbuildMessage(msg: any): string {
+    const text = typeof msg?.text === 'string' ? msg.text : String(msg);
+    const loc = msg?.location;
+    if (loc && typeof loc.file === 'string') {
+        const position = typeof loc.line === 'number' ? `${loc.line}:${loc.column ?? 1}` : '1:1';
+        return `${loc.file}:${position} ${text}`;
+    }
+    return text;
+}
+
+async function getScaffoldAssets(): Promise<readonly ModuleAsset[]> {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const packageRoot = path.resolve(here, '..');
+    const templatesRoot = path.join(packageRoot, 'templates', 'backend');
+
+    return [
+        {
+            sourcePath: path.join(templatesRoot, 'tsconfig.json'),
+            targetPath: path.join('src', 'backend', 'tsconfig.json')
+        },
+        {
+            sourcePath: path.join(templatesRoot, 'index.ts'),
+            targetPath: path.join('src', 'backend', 'index.ts')
+        }
+    ];
 }
