@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+REGISTRY="${REGISTRY:-https://npm.pkg.github.com}"
+
 usage() {
   cat <<'EOF'
 Usage: scripts/publish.sh <patch|minor|major|x.y.z>
@@ -39,6 +41,13 @@ main() {
   echo "› npm version $bump"
   npm version "$bump"
 
+  # Resolve package identity post-bump
+  local pkg_name
+  local pkg_version
+  pkg_name="$(node -p "require('./package.json').name")"
+  pkg_version="$(node -p "require('./package.json').version")"
+  echo "› preparing ${pkg_name}@${pkg_version}"
+
   echo "› npm run build"
   npm run build
 
@@ -48,8 +57,13 @@ main() {
   echo "› npm run smoke"
   npm run smoke
 
-  echo "› npm publish --registry=https://npm.pkg.github.com"
-  npm publish --registry="https://npm.pkg.github.com"
+  # Skip publish if the version already exists on the registry (idempotent CI)
+  if npm view "${pkg_name}@${pkg_version}" version --registry="${REGISTRY}" >/dev/null 2>&1; then
+    echo "› ${pkg_name}@${pkg_version} already exists on ${REGISTRY}; skipping publish"
+  else
+    echo "› npm publish --registry=${REGISTRY}"
+    npm publish --registry="${REGISTRY}"
+  fi
 
   echo
   # If running in CI or without a TTY, skip the interactive prompt.
@@ -92,7 +106,7 @@ ensure_clean_git() {
 }
 
 ensure_npm_login() {
-  if ! npm whoami --registry="https://npm.pkg.github.com" >/dev/null 2>&1; then
+  if ! npm whoami --registry="${REGISTRY}" >/dev/null 2>&1; then
     cat >&2 <<'EOF'
 error: not authenticated with https://npm.pkg.github.com.
 Run: npm login --registry=https://npm.pkg.github.com --scope=@webstir-io
