@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { backendProvider } from '../dist/index.js';
+import { CONTRACT_VERSION } from '@webstir-io/module-contract';
 
 function getLocalBinPath() {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -49,7 +50,7 @@ async function main() {
     type: 'module',
     webstir: {
       module: {
-        contractVersion: '1.0.0',
+        contractVersion: CONTRACT_VERSION,
         name: '@smoke/backend',
         version: '0.0.0',
         kind: 'backend',

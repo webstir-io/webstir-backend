@@ -1,5 +1,5 @@
 import { initContract } from '@ts-rest/core';
-import { createModule, fromTsRestRouter, type RequestContext, type SSRContext } from '@webstir-io/module-contract';
+import { createModule, fromTsRestRouter, CONTRACT_VERSION, type RequestContext, type SSRContext } from '@webstir-io/module-contract';
 import { z } from 'zod';
 
 type Account = {
@@ -62,7 +62,7 @@ const routeSpecs = fromTsRestRouter<AccountsContext>({
 
 export const module = createModule<AccountsContext, SSRContext>({
   manifest: {
-    contractVersion: '1.0.0',
+    contractVersion: CONTRACT_VERSION,
     name: '@demo/accounts',
     version: '0.1.0',
     kind: 'backend',

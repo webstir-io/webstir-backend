@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build as esbuild } from 'esbuild';
 
 import { glob } from 'glob';
-import { moduleManifestSchema } from '@webstir-io/module-contract';
+import { moduleManifestSchema, CONTRACT_VERSION } from '@webstir-io/module-contract';
 import type {
     ModuleArtifact,
     ModuleAsset,
@@ -179,7 +179,7 @@ async function loadWorkspaceModuleManifest(
     const moduleConfig = workspacePackage?.webstir?.module ?? {};
 
     let manifestCandidate: ModuleManifest = {
-        contractVersion: typeof moduleConfig.contractVersion === 'string' ? moduleConfig.contractVersion : '1.0.0',
+        contractVersion: typeof moduleConfig.contractVersion === 'string' ? moduleConfig.contractVersion : CONTRACT_VERSION,
         name: typeof moduleConfig.name === 'string' ? moduleConfig.name : deriveModuleName(workspacePackage, workspaceRoot),
         version: typeof moduleConfig.version === 'string' ? moduleConfig.version : deriveModuleVersion(workspacePackage),
         kind: 'backend',
@@ -227,7 +227,7 @@ async function loadWorkspaceModuleManifest(
             message: `[webstir-backend] module manifest validation failed (${problems}). Falling back to defaults.`
         });
         return {
-            contractVersion: '1.0.0',
+            contractVersion: CONTRACT_VERSION,
             name: deriveModuleName(workspacePackage, workspaceRoot),
             version: deriveModuleVersion(workspacePackage),
             kind: 'backend',

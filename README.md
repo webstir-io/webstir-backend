@@ -98,7 +98,7 @@ After a build, the provider also tries to load `build/backend/module.js` (compil
 ```ts
 // src/backend/module.ts
 import { initContract } from '@ts-rest/core';
-import { createModule, fromTsRestRouter, type RequestContext } from '@webstir-io/module-contract';
+import { createModule, fromTsRestRouter, CONTRACT_VERSION, type RequestContext } from '@webstir-io/module-contract';
 import { z } from 'zod';
 
 const c = initContract();
@@ -147,7 +147,7 @@ const routeSpecs = fromTsRestRouter<RequestContext>({
 
 export const module = createModule({
   manifest: {
-    contractVersion: '1.0.0',
+    contractVersion: CONTRACT_VERSION,
     name: '@demo/accounts',
     version: '0.1.0',
     kind: 'backend',
