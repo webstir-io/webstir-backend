@@ -52,7 +52,22 @@ main() {
   npm publish --registry="https://npm.pkg.github.com"
 
   echo
-  read -r -p "Push git commit and tag upstream? [y/N]: " reply
+  # If running in CI or without a TTY, skip the interactive prompt.
+  if [[ -n "${CI:-}" || ! -t 0 ]]; then
+    if [[ "${PUBLISH_AUTO_PUSH:-}" =~ ^([Yy][Ee][Ss]|[Yy]|1|true)$ ]]; then
+      echo "› git push"
+      git push
+      echo "› git push --tags"
+      git push --tags
+    else
+      echo "No TTY detected; skipping git push prompt."
+      echo "Set PUBLISH_AUTO_PUSH=1 to push commit and tags automatically."
+    fi;
+    return 0
+  fi
+
+  # Interactive shell: ask the user.
+  read -r -p "Push git commit and tag upstream? [y/N]: " reply || true
   if [[ "$reply" =~ ^[Yy](es)?$ ]]; then
     echo "› git push"
     git push
