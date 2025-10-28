@@ -62,10 +62,103 @@ The provider expects a standard workspace layout and performs two steps:
 
 - `metadata` — package id, version, kind (`backend`), CLI compatibility, Node range.
 - `resolveWorkspace({ workspaceRoot })` — returns canonical source/build/test roots.
-- `build(options)` — type‑checks with `tsc --noEmit`, then runs esbuild. In `build`/`test` mode it transpiles without bundling; in `publish` it bundles workspace code, externalizes `node_modules`, minifies, strips comments, and defines `NODE_ENV=production`. Artifacts are gathered and a manifest describing entry points and diagnostics is returned.
+- `build(options)` — type‑checks with `tsc --noEmit`, then runs esbuild. In `build`/`test` mode it transpiles without bundling; in `publish` it bundles workspace code, externalizes `node_modules`, minifies, strips comments, and defines `NODE_ENV=production`. Artifacts are gathered and a manifest describing entry points, diagnostics, and the module contract manifest is returned.
 - `getScaffoldAssets()` — returns starter files to bootstrap a backend workspace:
   - `src/backend/tsconfig.json` (NodeNext, outDir `build/backend`)
   - `src/backend/index.ts` (minimal entry: logs ports and mode)
+
+### Module Manifest Integration
+
+When `build()` completes, it now returns a `ModuleBuildManifest` with a `module` property that matches the contract introduced in `@webstir-io/module-contract@0.1.5`. The provider looks for module metadata in the workspace’s `package.json` under `webstir.module`. If present, the object is validated against the shared `moduleManifestSchema`; otherwise, sane defaults are generated from the workspace package name/version.
+
+```jsonc
+// workspace/package.json
+{
+  "name": "@demo/accounts",
+  "version": "0.1.0",
+  "webstir": {
+    "module": {
+      "contractVersion": "1.0.0",
+      "name": "@demo/accounts",
+      "version": "0.1.0",
+      "capabilities": ["auth", "views"],
+      "routes": [],
+      "views": []
+    }
+  }
+}
+```
+
+If the manifest fails validation, the provider emits a diagnostic and falls back to a minimal contract (name/version/kind only). This keeps consuming tooling resilient while still surfacing issues to the developer.
+
+After a build, the provider also tries to load `build/backend/module.js` (compiled from `src/backend/module.ts`). Export a `createModule(...)` definition as `module`, `moduleDefinition`, or `default` to have routes, views, and capabilities hydrated automatically.
+
+#### ts-rest Router Example
+
+```ts
+// src/backend/module.ts
+import { initContract } from '@ts-rest/core';
+import { createModule, fromTsRestRouter, type RequestContext } from '@webstir-io/module-contract';
+import { z } from 'zod';
+
+const c = initContract();
+
+const accountSchema = z.object({
+  id: z.string().uuid(),
+  email: z.string().email()
+});
+
+const router = c.router({
+  list: c.query({
+    path: '/accounts',
+    method: 'GET',
+    responses: {
+      200: z.object({ data: z.array(accountSchema) })
+    }
+  }),
+  detail: c.query({
+    path: '/accounts/:id',
+    method: 'GET',
+    pathParams: z.object({ id: z.string().uuid() }),
+    responses: {
+      200: accountSchema,
+      404: z.null()
+    }
+  })
+});
+
+const routeSpecs = fromTsRestRouter<RequestContext>({
+  router,
+  baseName: 'accounts',
+  createRoute: ({ keyPath }) => ({
+    handler: async (ctx) => {
+      if (keyPath.at(-1) === 'detail') {
+        const row = await ctx.db.accounts.findById(ctx.params.id);
+        return row
+          ? { status: 200, body: row }
+          : { status: 404, errors: [{ code: 'not_found', message: 'Account not found' }] };
+      }
+
+      const rows = await ctx.db.accounts.list();
+      return { status: 200, body: { data: rows } };
+    }
+  })
+});
+
+export const module = createModule({
+  manifest: {
+    contractVersion: '1.0.0',
+    name: '@demo/accounts',
+    version: '0.1.0',
+    kind: 'backend',
+    capabilities: ['db', 'auth'],
+    routes: routeSpecs.map((route) => route.definition)
+  },
+  routes: routeSpecs
+});
+```
+
+When `npm run build` completes, the provider detects `build/backend/module.js`, hydrates the manifest with the `routes` metadata above, and returns it to the orchestrator alongside the compiled entry points.
 
 ### Multiple Entry Points
 The provider discovers these entries automatically (all optional):
@@ -102,6 +195,8 @@ npm run smoke
 - Add tests under `tests/**/*.test.ts` and wire them into `npm test` once the backend runtime is ready.
 - Ensure CI runs `npm ci`, `npm run build`, and any smoke tests before publish.
 - Publishing targets GitHub Packages via `publishConfig.registry`.
+- Reference implementation: `examples/accounts/` demonstrates a ts-rest powered module exporting `createModule()` for provider hydration.
+- Use `npm run release -- <patch|minor|major|x.y.z>` to bump the version, build, test, run the smoke check, and publish via the bundled helper script.
 
 ## Troubleshooting
 
