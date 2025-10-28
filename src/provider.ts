@@ -1,20 +1,24 @@
 import path from 'node:path';
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { build as esbuild } from 'esbuild';
 
 import { glob } from 'glob';
+import { moduleManifestSchema } from '@webstir-io/module-contract';
 import type {
     ModuleArtifact,
+    ModuleAsset,
     ModuleBuildOptions,
     ModuleBuildResult,
+    ModuleDefinition,
     ModuleDiagnostic,
+    ModuleManifest,
     ModuleProvider,
-    ResolvedModuleWorkspace,
-    ModuleAsset
+    ResolvedModuleWorkspace
 } from '@webstir-io/module-contract';
 
 import packageJson from '../package.json' with { type: 'json' };
@@ -28,6 +32,19 @@ interface PackageJson {
 }
 
 const pkg = packageJson as PackageJson;
+
+interface WorkspacePackageJson {
+    readonly name?: string;
+    readonly version?: string;
+    readonly webstir?: {
+        readonly module?: WorkspaceModuleConfig;
+    };
+}
+
+type WorkspaceModuleConfig = Partial<ModuleManifest> & {
+    readonly contractVersion?: string;
+    readonly capabilities?: ModuleManifest['capabilities'];
+};
 
 function resolveWorkspacePaths(workspaceRoot: string): ResolvedModuleWorkspace {
     return {
@@ -87,8 +104,23 @@ export const backendProvider: ModuleProvider = {
         });
         console.info(`[webstir-backend] ${mode}:esbuild done`);
 
+        const moduleSource = await discoverModuleDefinitionSource(paths.sourceRoot);
+
+        if (moduleSource) {
+            await buildModuleDefinition({
+                sourceFile: moduleSource,
+                sourceRoot: paths.sourceRoot,
+                buildRoot: paths.buildRoot,
+                tsconfigPath,
+                mode,
+                env: options.env,
+                diagnostics
+            });
+        }
+
         const artifacts = await collectArtifacts(paths.buildRoot);
-        const manifest = createManifest(paths.buildRoot, artifacts, diagnostics);
+        const moduleManifest = await loadWorkspaceModuleManifest(options.workspaceRoot, paths.buildRoot, entryPoints, diagnostics);
+        const manifest = createManifest(paths.buildRoot, artifacts, diagnostics, moduleManifest);
 
         console.info(`[webstir-backend] ${mode}:complete (entries=${manifest.entryPoints.length})`);
         return {
@@ -125,7 +157,162 @@ async function collectArtifacts(buildRoot: string): Promise<ModuleArtifact[]> {
     }));
 }
 
-function createManifest(buildRoot: string, artifacts: readonly ModuleArtifact[], diagnostics: ModuleDiagnostic[]) {
+async function loadWorkspaceModuleManifest(
+    workspaceRoot: string,
+    buildRoot: string,
+    entryPoints: readonly string[],
+    diagnostics: ModuleDiagnostic[]
+): Promise<ModuleManifest> {
+    const pkgPath = path.join(workspaceRoot, 'package.json');
+    let workspacePackage: WorkspacePackageJson | undefined;
+
+    try {
+        const raw = await readFile(pkgPath, 'utf8');
+        workspacePackage = JSON.parse(raw) as WorkspacePackageJson;
+    } catch (error) {
+        diagnostics.push({
+            severity: 'warn',
+            message: `[webstir-backend] unable to read ${pkgPath}: ${(error as Error).message}. Using defaults.`
+        });
+    }
+
+    const moduleConfig = workspacePackage?.webstir?.module ?? {};
+
+    let manifestCandidate: ModuleManifest = {
+        contractVersion: typeof moduleConfig.contractVersion === 'string' ? moduleConfig.contractVersion : '1.0.0',
+        name: typeof moduleConfig.name === 'string' ? moduleConfig.name : deriveModuleName(workspacePackage, workspaceRoot),
+        version: typeof moduleConfig.version === 'string' ? moduleConfig.version : deriveModuleVersion(workspacePackage),
+        kind: 'backend',
+        capabilities: Array.isArray(moduleConfig.capabilities) ? moduleConfig.capabilities : [],
+        routes: moduleConfig.routes ?? [],
+        views: moduleConfig.views ?? [],
+        jobs: moduleConfig.jobs ?? [],
+        events: moduleConfig.events ?? [],
+        services: moduleConfig.services ?? [],
+        init: moduleConfig.init,
+        dispose: moduleConfig.dispose
+    };
+
+    const definition = await loadModuleDefinition(buildRoot, diagnostics);
+    if (definition) {
+        const definitionManifest = definition.manifest ?? ({} as ModuleManifest);
+        const routesFromDefinition = definition.routes?.map((route) => route.definition);
+        const viewsFromDefinition = definition.views?.map((view) => view.definition);
+
+        const mergedCapabilities = Array.from(
+            new Set([...(manifestCandidate.capabilities ?? []), ...(definitionManifest.capabilities ?? [])])
+        );
+
+        manifestCandidate = {
+            ...manifestCandidate,
+            ...definitionManifest,
+            capabilities: mergedCapabilities,
+            routes: routesFromDefinition ?? definitionManifest.routes ?? manifestCandidate.routes ?? [],
+            views: viewsFromDefinition ?? definitionManifest.views ?? manifestCandidate.views ?? [],
+            jobs: definitionManifest.jobs ?? manifestCandidate.jobs ?? [],
+            events: definitionManifest.events ?? manifestCandidate.events ?? [],
+            services: definitionManifest.services ?? manifestCandidate.services ?? [],
+            init: definitionManifest.init ?? manifestCandidate.init,
+            dispose: definitionManifest.dispose ?? manifestCandidate.dispose
+        };
+    }
+
+    const validation = moduleManifestSchema.safeParse(manifestCandidate);
+    if (!validation.success) {
+        const problems = validation.error.issues
+            .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+            .join('; ');
+        diagnostics.push({
+            severity: 'error',
+            message: `[webstir-backend] module manifest validation failed (${problems}). Falling back to defaults.`
+        });
+        return {
+            contractVersion: '1.0.0',
+            name: deriveModuleName(workspacePackage, workspaceRoot),
+            version: deriveModuleVersion(workspacePackage),
+            kind: 'backend',
+            capabilities: [],
+            routes: [],
+            views: [],
+            jobs: [],
+            events: [],
+            services: []
+        };
+    }
+
+    const manifest = validation.data;
+
+    if (manifest.routes?.length && entryPoints.length === 0) {
+        diagnostics.push({
+            severity: 'warn',
+            message: '[webstir-backend] module manifest defines routes but no entry points were built. Ensure backend compilation produced handlers.'
+        });
+    }
+
+    return manifest;
+}
+
+async function loadModuleDefinition(
+    buildRoot: string,
+    diagnostics: ModuleDiagnostic[]
+): Promise<ModuleDefinition | undefined> {
+    const candidates = [
+        path.join(buildRoot, 'module.js'),
+        path.join(buildRoot, 'module.mjs'),
+        path.join(buildRoot, 'module/index.js'),
+        path.join(buildRoot, 'module/index.mjs')
+    ];
+
+    for (const fullPath of candidates) {
+        if (!existsSync(fullPath)) {
+            continue;
+        }
+
+        try {
+            const moduleUrl = `${pathToFileURL(fullPath).href}?t=${Date.now()}`;
+            const imported = (await import(moduleUrl)) as Record<string, unknown>;
+            const definitionCandidate = extractModuleDefinition(imported);
+            if (isModuleDefinition(definitionCandidate)) {
+                return definitionCandidate;
+            }
+            diagnostics.push({
+                severity: 'warn',
+                message: `[webstir-backend] module definition at ${fullPath} does not export a createModule() definition.`
+            });
+        } catch (error) {
+            diagnostics.push({
+                severity: 'warn',
+                message: `[webstir-backend] failed to load module definition from ${fullPath}: ${(error as Error).message}`
+            });
+        }
+    }
+
+    return undefined;
+}
+
+function extractModuleDefinition(exports: Record<string, unknown>): unknown {
+    const keys = ['module', 'moduleDefinition', 'default', 'backendModule'];
+    for (const key of keys) {
+        if (key in exports) {
+            const value = exports[key as keyof typeof exports];
+            if (value !== null && value !== undefined) {
+                return value;
+            }
+        }
+    }
+    return undefined;
+}
+
+function isModuleDefinition(value: unknown): value is ModuleDefinition {
+    return typeof value === 'object' && value !== null && 'manifest' in (value as Record<string, unknown>);
+}
+
+function createManifest(
+    buildRoot: string,
+    artifacts: readonly ModuleArtifact[],
+    diagnostics: ModuleDiagnostic[],
+    moduleManifest: ModuleManifest
+) {
     const entryPoints: string[] = [];
 
     for (const artifact of artifacts) {
@@ -150,7 +337,8 @@ function createManifest(buildRoot: string, artifacts: readonly ModuleArtifact[],
     return {
         entryPoints,
         staticAssets: [],
-        diagnostics
+        diagnostics,
+        module: moduleManifest
     };
 }
 
@@ -211,6 +399,26 @@ async function runTypeCheck(tsconfigPath: string, env: Record<string, string | u
             }
         });
     });
+}
+
+function deriveModuleName(pkg: WorkspacePackageJson | undefined, workspaceRoot: string): string {
+    if (typeof pkg?.webstir?.module?.name === 'string' && pkg.webstir.module.name.length > 0) {
+        return pkg.webstir.module.name;
+    }
+    if (typeof pkg?.name === 'string' && pkg.name.length > 0) {
+        return pkg.name;
+    }
+    return `backend-module-${path.basename(workspaceRoot)}`;
+}
+
+function deriveModuleVersion(pkg: WorkspacePackageJson | undefined): string {
+    if (typeof pkg?.webstir?.module?.version === 'string' && pkg.webstir.module.version.length > 0) {
+        return pkg.webstir.module.version;
+    }
+    if (typeof pkg?.version === 'string' && pkg.version.length > 0) {
+        return pkg.version;
+    }
+    return '0.0.0';
 }
 
 function shouldTypeCheck(mode: 'build' | 'publish' | 'test', env: Record<string, string | undefined>): boolean {
@@ -331,6 +539,78 @@ async function discoverEntryPoints(sourceRoot: string): Promise<string[]> {
         }
     }
     return Array.from(entries);
+}
+
+async function discoverModuleDefinitionSource(sourceRoot: string): Promise<string | undefined> {
+    const patterns = [
+        'module.{ts,tsx,js,mjs}',
+        'module/index.{ts,tsx,js,mjs}'
+    ];
+
+    for (const pattern of patterns) {
+        const matches = await glob(pattern, {
+            cwd: sourceRoot,
+            absolute: true,
+            nodir: true,
+            dot: false
+        });
+
+        if (matches.length > 0) {
+            return matches[0];
+        }
+    }
+
+    return undefined;
+}
+
+interface ModuleDefinitionBuildOptions {
+    readonly sourceFile: string;
+    readonly sourceRoot: string;
+    readonly buildRoot: string;
+    readonly tsconfigPath: string;
+    readonly mode: 'build' | 'publish' | 'test';
+    readonly env?: Record<string, string | undefined>;
+    readonly diagnostics: ModuleDiagnostic[];
+}
+
+async function buildModuleDefinition(options: ModuleDefinitionBuildOptions): Promise<void> {
+    const { sourceFile, sourceRoot, buildRoot, tsconfigPath, mode, env, diagnostics } = options;
+
+    const isProduction = mode === 'publish';
+    const nodeEnv = env?.NODE_ENV ?? (isProduction ? 'production' : 'development');
+    const define: Record<string, string> = {
+        'process.env.NODE_ENV': JSON.stringify(nodeEnv)
+    };
+
+    try {
+        await esbuild({
+            entryPoints: [sourceFile],
+            bundle: false,
+            platform: 'node',
+            target: 'node20',
+            format: 'esm',
+            sourcemap: !isProduction,
+            outdir: buildRoot,
+            outbase: sourceRoot,
+            entryNames: '[dir]/[name]',
+            tsconfig: existsSync(tsconfigPath) ? tsconfigPath : undefined,
+            define,
+            logLevel: 'silent'
+        });
+    } catch (error) {
+        if (isEsbuildFailure(error)) {
+            for (const e of error.errors ?? []) {
+                diagnostics.push({ severity: 'error', message: formatEsbuildMessage(e) });
+            }
+            for (const w of error.warnings ?? []) {
+                diagnostics.push({ severity: 'warn', message: formatEsbuildMessage(w) });
+            }
+        } else if (error instanceof Error) {
+            diagnostics.push({ severity: 'error', message: error.message });
+        } else {
+            diagnostics.push({ severity: 'error', message: String(error) });
+        }
+    }
 }
 
 function isEsbuildFailure(error: unknown): error is { errors?: readonly any[]; warnings?: readonly any[] } {
