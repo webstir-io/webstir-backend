@@ -2,8 +2,6 @@
 
 set -euo pipefail
 
-REGISTRY="${REGISTRY:-https://npm.pkg.github.com}"
-
 usage() {
   cat <<'EOF'
 Usage: scripts/publish.sh <patch|minor|major|x.y.z>
@@ -34,7 +32,6 @@ main() {
   fi
 
   ensure_clean_git
-  ensure_npm_login
 
   cd "$ROOT_DIR"
 
@@ -57,16 +54,11 @@ main() {
   echo "› npm run smoke"
   npm run smoke
 
-  # Skip publish if the version already exists on the registry (idempotent CI)
-  if npm view "${pkg_name}@${pkg_version}" version --registry="${REGISTRY}" >/dev/null 2>&1; then
-    echo "› ${pkg_name}@${pkg_version} already exists on ${REGISTRY}; skipping publish"
-  else
-    echo "› npm publish --registry=${REGISTRY}"
-    npm publish --registry="${REGISTRY}"
-  fi
+  # Do not publish from this script. Release workflow owns publish.
+  echo "› Skipping direct npm publish; pushing commit+tag will trigger the release workflow."
 
   echo
-  # If running in CI or without a TTY, skip the interactive prompt.
+  # If running in CI or without a TTY, skip the interactive prompt unless auto-push requested.
   if [[ -n "${CI:-}" || ! -t 0 ]]; then
     if [[ "${PUBLISH_AUTO_PUSH:-}" =~ ^([Yy][Ee][Ss]|[Yy]|1|true)$ ]]; then
       echo "› git push"
@@ -101,16 +93,6 @@ ensure_clean_git() {
   fi
   if ! git diff --quiet --cached --ignore-submodules; then
     echo "error: git index has staged changes" >&2
-    exit 1
-  fi
-}
-
-ensure_npm_login() {
-  if ! npm whoami --registry="${REGISTRY}" >/dev/null 2>&1; then
-    cat >&2 <<'EOF'
-error: not authenticated with https://npm.pkg.github.com.
-Run: npm login --registry=https://npm.pkg.github.com --scope=@webstir-io
-EOF
     exit 1
   fi
 }
