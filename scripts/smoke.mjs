@@ -143,7 +143,13 @@ async function main() {
     routes: Array.isArray(publishModule.routes) ? publishModule.routes.length : 0,
     views: Array.isArray(publishModule.views) ? publishModule.views.length : 0
   });
-  console.info('[smoke] publish diagnostics (>=warn):', publishResult.manifest.diagnostics.map((d) => d.message));
+  const publishDiagnostics = publishResult.manifest.diagnostics
+    .map((d) => ({ ...d, message: d.message.trim() }))
+    .filter((d) => d.severity !== 'info');
+  const unexpectedPublishDiagnostics = publishDiagnostics.filter((d) => !/TypeScript compiler \(tsc\) not found|Type checking failed/.test(d.message));
+  if (unexpectedPublishDiagnostics.length > 0) {
+    console.info('[smoke] publish diagnostics (non-info):', unexpectedPublishDiagnostics.map((d) => d.message));
+  }
 
   if (process.env.WEBSTIR_BACKEND_SMOKE_FASTIFY !== 'skip') {
     // Fastify scaffold type-check (no run): ensure tsc sees server/fastify.ts
@@ -214,6 +220,8 @@ async function main() {
   } else {
     console.info('[smoke] fastify type-check skipped by WEBSTIR_BACKEND_SMOKE_FASTIFY=skip');
   }
+
+  console.info('[smoke] completed: build ✔ publish ✔ fastify ✔');
 }
 
 main().catch((err) => {

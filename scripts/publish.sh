@@ -54,9 +54,6 @@ main() {
   echo "› npm run smoke"
   npm run smoke
 
-  # Do not publish from this script. Release workflow owns publish.
-  echo "› Skipping direct npm publish; pushing commit+tag will trigger the release workflow."
-
   echo
   # If running in CI or without a TTY, skip the interactive prompt unless auto-push requested.
   if [[ -n "${CI:-}" || ! -t 0 ]]; then
