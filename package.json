@@ -29,6 +29,8 @@
     "clean": "rm -rf dist",
     "prepare": "npm run build",
     "watch": "npm run build && node -e \"import('./dist/watch.js').then(m=>m.startBackendWatch({workspaceRoot:process.cwd(),env:{WEBSTIR_MODULE_MODE:'build'}}));\"",
+    "dev": "npm run watch",
+    "dev:fast": "WEBSTIR_BACKEND_TYPECHECK=skip npm run watch",
     "smoke": "npm run build && node scripts/smoke.mjs",
     "release": "bash scripts/publish.sh"
   },

@@ -1,11 +1,12 @@
 import path from 'node:path';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { build as esbuild } from 'esbuild';
+import { build as esbuild, context as esbuildContext } from 'esbuild';
+import type { BuildContext as EsbuildContext } from 'esbuild';
 
 import { glob } from 'glob';
 import { moduleManifestSchema, CONTRACT_VERSION } from '@webstir-io/module-contract';
@@ -32,6 +33,19 @@ interface PackageJson {
 }
 
 const pkg = packageJson as PackageJson;
+
+interface IncrementalBuildEntry {
+    entrySignature: string;
+    context: EsbuildContext;
+}
+
+const incrementalBuildCache = new Map<string, IncrementalBuildEntry>();
+
+if (typeof process !== 'undefined' && typeof process.once === 'function') {
+    process.once('exit', () => {
+        clearIncrementalCache();
+    });
+}
 
 interface WorkspacePackageJson {
     readonly name?: string;
@@ -92,7 +106,7 @@ export const backendProvider: ModuleProvider = {
             diagnostics.push({ severity: 'warn', message: `No backend entry points found under ${paths.sourceRoot} (expected index.* or functions/*/index.* or jobs/*/index.*).` });
         }
         console.info(`[webstir-backend] ${mode}:esbuild start`);
-        await runEsbuild({
+        const outputs = await runEsbuild({
             sourceRoot: paths.sourceRoot,
             buildRoot: paths.buildRoot,
             tsconfigPath,
@@ -123,9 +137,36 @@ export const backendProvider: ModuleProvider = {
         const manifest = createManifest(paths.buildRoot, artifacts, diagnostics, moduleManifest);
 
         console.info(`[webstir-backend] ${mode}:complete (entries=${manifest.entryPoints.length})`);
+        diagnostics.push({ severity: 'info', message: `[webstir-backend] ${mode}:built entries=${manifest.entryPoints.length}` });
+        try {
+            // Categorize entries by bucket (server/functions/jobs)
+            const server = manifest.entryPoints.filter((p) => p === 'index.js' || /(^|\/)index\.js$/.test(p) && !/^(functions|jobs)\//.test(p)).length;
+            const functionsCount = manifest.entryPoints.filter((p) => p.startsWith('functions/')).length;
+            const jobsCount = manifest.entryPoints.filter((p) => p.startsWith('jobs/')).length;
+            diagnostics.push({ severity: 'info', message: `[webstir-backend] entries by bucket: server=${server} functions=${functionsCount} jobs=${jobsCount}` });
+        } catch {
+            // ignore
+        }
+        try {
+            await persistAndDiffOutputs(options.workspaceRoot, paths.buildRoot, outputs, options.env ?? {}, diagnostics, mode);
+        } catch {
+            // ignore cache errors
+        }
+        try {
+            await persistAndDiffManifest(options.workspaceRoot, moduleManifest, options.env ?? {}, diagnostics);
+        } catch {
+            // ignore cache errors
+        }
+        // Optionally filter diagnostics by severity for orchestrator consumption
+        const minLevel = normalizeLogLevel(options.env?.WEBSTIR_BACKEND_LOG_LEVEL);
+        const filteredDiagnostics = filterDiagnostics(manifest.diagnostics, minLevel);
+
         return {
             artifacts,
-            manifest
+            manifest: {
+                ...manifest,
+                diagnostics: filteredDiagnostics
+            }
         };
     },
     async getScaffoldAssets() {
@@ -242,11 +283,73 @@ async function loadWorkspaceModuleManifest(
 
     const manifest = validation.data;
 
+    // Duplicate route detection (method+path), with basic path normalization
+    try {
+        const normalizePath = (p: unknown) => {
+            let s = typeof p === 'string' ? p : '';
+            if (!s.startsWith('/')) s = '/' + s;
+            s = s.replace(/\/+/, '/');
+            if (s.length > 1 && s.endsWith('/')) s = s.slice(0, -1);
+            return s;
+        };
+        const seen = new Map<string, number>();
+        for (const r of manifest.routes ?? []) {
+            const method = typeof (r as any).method === 'string' ? (r as any).method.toUpperCase() : '';
+            const pathKey = normalizePath((r as any).path);
+            const key = `${method} ${pathKey}`;
+            seen.set(key, (seen.get(key) ?? 0) + 1);
+        }
+        const dups = Array.from(seen.entries()).filter(([, count]) => count > 1);
+        if (dups.length > 0) {
+            const list = dups.map(([k, c]) => `${k} (${c}x)`).join(', ');
+            diagnostics.push({ severity: 'warn', message: `[webstir-backend] duplicate route definitions: ${list}` });
+        }
+    } catch {
+        // best-effort only
+    }
+
     if (manifest.routes?.length && entryPoints.length === 0) {
         diagnostics.push({
             severity: 'warn',
             message: '[webstir-backend] module manifest defines routes but no entry points were built. Ensure backend compilation produced handlers.'
         });
+    }
+
+    // Jobs/Events/Services counts and soft hints
+    try {
+        const jobs = Array.isArray(manifest.jobs) ? manifest.jobs : [];
+        const events = Array.isArray(manifest.events) ? manifest.events : [];
+        const services = Array.isArray(manifest.services) ? manifest.services : [];
+        if (jobs.length + events.length + services.length > 0) {
+            diagnostics.push({
+                severity: 'info',
+                message: `[webstir-backend] manifest jobs=${jobs.length} events=${events.length} services=${services.length}`
+            });
+        }
+
+        // Warn if any job lacks a schedule (advisory; schedule is optional by schema)
+        const noSchedule = jobs.filter((j: any) => j && typeof j.name === 'string' && (j.schedule === undefined || j.schedule === null));
+        if (noSchedule.length > 0) {
+            const MAX_LIST = 10;
+            const names = noSchedule.map((j: any) => j.name).slice(0, MAX_LIST).join(', ');
+            const omitted = noSchedule.length > MAX_LIST ? ` (+${noSchedule.length - MAX_LIST} more)` : '';
+            diagnostics.push({
+                severity: 'warn',
+                message: `[webstir-backend] jobs without schedules: ${names}${omitted}`
+            });
+        }
+    } catch {
+        // best-effort only
+    }
+
+    // Quick manifest summary
+    try {
+        const routes = Array.isArray(manifest.routes) ? manifest.routes.length : 0;
+        const views = Array.isArray(manifest.views) ? manifest.views.length : 0;
+        const caps = Array.isArray(manifest.capabilities) && manifest.capabilities.length > 0 ? ` [${manifest.capabilities.join(', ')}]` : '';
+        diagnostics.push({ severity: 'info', message: `[webstir-backend] manifest routes=${routes} views=${views}${caps}` });
+    } catch {
+        // ignore
     }
 
     return manifest;
@@ -432,6 +535,21 @@ function shouldTypeCheck(mode: 'build' | 'publish' | 'test', env: Record<string,
     return true;
 }
 
+type Severity = 'info' | 'warn' | 'error';
+
+function normalizeLogLevel(value: unknown): Severity {
+    if (typeof value !== 'string') return 'info';
+    const v = value.toLowerCase();
+    if (v === 'error' || v === 'warn' || v === 'info') return v;
+    return 'info';
+}
+
+function filterDiagnostics(list: readonly ModuleDiagnostic[], min: Severity): readonly ModuleDiagnostic[] {
+    const rank = (s: Severity) => (s === 'error' ? 3 : s === 'warn' ? 2 : 1);
+    const threshold = rank(min);
+    return list.filter((d) => rank(d.severity as Severity) >= threshold);
+}
+
 interface BuildOptions {
     readonly sourceRoot: string;
     readonly buildRoot: string;
@@ -443,14 +561,26 @@ interface BuildOptions {
     readonly entryPoints: readonly string[];
 }
 
-async function runEsbuild(options: BuildOptions): Promise<void> {
+async function runEsbuild(options: BuildOptions): Promise<Record<string, number> | undefined> {
     const { sourceRoot, buildRoot, tsconfigPath, mode, env, diagnostics, entryPoints } = options;
+    const isProduction = mode === 'publish';
+    const useIncremental = !isProduction && options.incremental === true;
+    const incrementalKey = useIncremental ? createIncrementalKey(mode, buildRoot) : undefined;
+
     if (!entryPoints || entryPoints.length === 0) {
-        return;
+        if (incrementalKey) {
+            await disposeIncrementalBuild(incrementalKey);
+        }
+        return undefined;
     }
 
-    const isProduction = mode === 'publish';
+    const entrySignature = useIncremental ? createEntrySignature(entryPoints) : undefined;
     const nodeEnv = env?.NODE_ENV ?? (isProduction ? 'production' : 'development');
+    const diagMax = (() => {
+        const raw = env?.WEBSTIR_BACKEND_DIAG_MAX;
+        const n = typeof raw === 'string' ? parseInt(raw, 10) : NaN;
+        return Number.isFinite(n) && n > 0 ? n : 50;
+    })();
 
     const define: Record<string, string> = {
         'process.env.NODE_ENV': JSON.stringify(nodeEnv)
@@ -458,8 +588,15 @@ async function runEsbuild(options: BuildOptions): Promise<void> {
 
     const start = performance.now();
     try {
+        const MAX_PRINT = 50;
+        let reusedIncremental = false;
+        let result: Awaited<ReturnType<typeof esbuild>>;
+
         if (isProduction) {
-            const result = await esbuild({
+            if (incrementalKey) {
+                await disposeIncrementalBuild(incrementalKey);
+            }
+            result = await esbuild({
                 entryPoints: entryPoints as string[],
                 bundle: true,
                 packages: 'external',
@@ -477,15 +614,40 @@ async function runEsbuild(options: BuildOptions): Promise<void> {
                 logLevel: 'silent',
                 metafile: true
             });
-
-            const warnCount = result.warnings?.length ?? 0;
-            for (const w of result.warnings ?? []) {
-                diagnostics.push({ severity: 'warn', message: formatEsbuildMessage(w) });
+        } else if (useIncremental && incrementalKey && entrySignature) {
+            const cached = incrementalBuildCache.get(incrementalKey);
+            if (cached && cached.entrySignature === entrySignature) {
+                reusedIncremental = true;
+                result = await cached.context.rebuild();
+            } else {
+                if (cached) {
+                    await disposeIncrementalBuild(incrementalKey);
+                }
+                const ctx = await esbuildContext({
+                    entryPoints: entryPoints as string[],
+                    bundle: false,
+                    platform: 'node',
+                    target: 'node20',
+                    format: 'esm',
+                    sourcemap: true,
+                    outdir: buildRoot,
+                    outbase: sourceRoot,
+                    tsconfig: existsSync(tsconfigPath) ? tsconfigPath : undefined,
+                    define,
+                    logLevel: 'silent',
+                    metafile: true
+                });
+                incrementalBuildCache.set(incrementalKey, {
+                    entrySignature,
+                    context: ctx
+                });
+                result = await ctx.rebuild();
             }
-            const end = performance.now();
-            diagnostics.push({ severity: 'info', message: `[webstir-backend] publish:esbuild completed in ${(end - start).toFixed(1)}ms with ${warnCount} warning(s).` });
         } else {
-            const result = await esbuild({
+            if (incrementalKey) {
+                await disposeIncrementalBuild(incrementalKey);
+            }
+            result = await esbuild({
                 entryPoints: entryPoints as string[],
                 bundle: false,
                 platform: 'node',
@@ -496,33 +658,101 @@ async function runEsbuild(options: BuildOptions): Promise<void> {
                 outbase: sourceRoot,
                 tsconfig: existsSync(tsconfigPath) ? tsconfigPath : undefined,
                 define,
-                logLevel: 'silent'
+                logLevel: 'silent',
+                metafile: true
             });
-
-            const warnCount = result.warnings?.length ?? 0;
-            for (const w of result.warnings ?? []) {
-                diagnostics.push({ severity: 'warn', message: formatEsbuildMessage(w) });
-            }
-            const end = performance.now();
-            diagnostics.push({ severity: 'info', message: `[webstir-backend] ${mode}:esbuild completed in ${(end - start).toFixed(1)}ms with ${warnCount} warning(s).` });
         }
+
+        const warnCount = result.warnings?.length ?? 0;
+        for (const w of (result.warnings ?? []).slice(0, diagMax)) {
+            diagnostics.push({ severity: 'warn', message: formatEsbuildMessage(w) });
+        }
+        if (warnCount > diagMax) {
+            diagnostics.push({
+                severity: 'info',
+                message: `[webstir-backend] ${isProduction ? 'publish:esbuild' : `${mode}:esbuild`} ... ${warnCount - diagMax} more warning(s) omitted`
+            });
+        }
+        const end = performance.now();
+        const reuseSuffix = reusedIncremental ? ' (incremental)' : '';
+        diagnostics.push({
+            severity: 'info',
+            message: `[webstir-backend] ${isProduction ? 'publish:esbuild' : `${mode}:esbuild`} 0 error(s), ${warnCount} warning(s) in ${(end - start).toFixed(1)}ms${reuseSuffix}`
+        });
+
+        return collectOutputSizes((result as any).metafile, buildRoot);
     } catch (error) {
         const end = performance.now();
+        if (incrementalKey) {
+            await disposeIncrementalBuild(incrementalKey);
+        }
         if (isEsbuildFailure(error)) {
-            for (const e of error.errors ?? []) {
+            const errs = error.errors ?? [];
+            const warns = error.warnings ?? [];
+            for (const e of errs.slice(0, diagMax)) {
                 diagnostics.push({ severity: 'error', message: formatEsbuildMessage(e) });
             }
-            for (const w of error.warnings ?? []) {
+            for (const w of warns.slice(0, diagMax)) {
                 diagnostics.push({ severity: 'warn', message: formatEsbuildMessage(w) });
             }
+            if (errs.length > diagMax) {
+                diagnostics.push({ severity: 'info', message: `[webstir-backend] ${mode}:esbuild ... ${errs.length - diagMax} more error(s) omitted` });
+            }
+            if (warns.length > diagMax) {
+                diagnostics.push({ severity: 'info', message: `[webstir-backend] ${mode}:esbuild ... ${warns.length - diagMax} more warning(s) omitted` });
+            }
+            diagnostics.push({ severity: 'info', message: `[webstir-backend] ${mode}:esbuild ${errs.length} error(s), ${warns.length} warning(s) in ${(end - start).toFixed(1)}ms` });
         } else if (error instanceof Error) {
             diagnostics.push({ severity: 'error', message: error.message });
         } else {
             diagnostics.push({ severity: 'error', message: String(error) });
         }
-        diagnostics.push({ severity: 'info', message: `[webstir-backend] ${mode}:esbuild failed after ${(end - start).toFixed(1)}ms.` });
         throw new Error('esbuild failed.');
     }
+}
+
+function createIncrementalKey(mode: 'build' | 'publish' | 'test', buildRoot: string): string {
+    return `${mode}:${path.resolve(buildRoot)}`;
+}
+
+async function disposeIncrementalBuild(key: string): Promise<void> {
+    const cached = incrementalBuildCache.get(key);
+    if (cached) {
+        try {
+            await cached.context.dispose();
+        } catch {
+            // ignore
+        }
+        incrementalBuildCache.delete(key);
+    }
+}
+
+function clearIncrementalCache(): void {
+    for (const [key, entry] of incrementalBuildCache.entries()) {
+        try {
+            entry.context.dispose();
+        } catch {
+            // ignore
+        }
+        incrementalBuildCache.delete(key);
+    }
+}
+
+function createEntrySignature(entryPoints: readonly string[]): string {
+    return Array.from(entryPoints).sort().join('|');
+}
+
+function collectOutputSizes(metafile: unknown, buildRoot: string): Record<string, number> {
+    const outputs: Record<string, number> = {};
+    if (!metafile || typeof metafile !== 'object') {
+        return outputs;
+    }
+    const mf = metafile as { outputs?: Record<string, { bytes?: number }> };
+    for (const [outPath, info] of Object.entries(mf.outputs ?? {})) {
+        const rel = path.relative(buildRoot, outPath);
+        outputs[rel] = typeof info.bytes === 'number' ? info.bytes : 0;
+    }
+    return outputs;
 }
 
 async function discoverEntryPoints(sourceRoot: string): Promise<string[]> {
@@ -627,6 +857,131 @@ function formatEsbuildMessage(msg: any): string {
     return text;
 }
 
+async function persistAndDiffOutputs(
+    workspaceRoot: string,
+    buildRoot: string,
+    outputs: Record<string, number> | undefined,
+    env: Record<string, string | undefined>,
+    diagnostics: ModuleDiagnostic[],
+    mode: 'build' | 'publish' | 'test'
+): Promise<void> {
+    if (!outputs) return;
+    try {
+        const diagMax = (() => {
+            const raw = env?.WEBSTIR_BACKEND_DIAG_MAX;
+            const n = typeof raw === 'string' ? parseInt(raw, 10) : NaN;
+            return Number.isFinite(n) && n > 0 ? n : 50;
+        })();
+        const webstirDir = path.join(workspaceRoot, '.webstir');
+        const cachePath = path.join(webstirDir, 'backend-outputs.json');
+        await mkdir(webstirDir, { recursive: true });
+
+        let previous: Record<string, number> = {};
+        try {
+            const raw = await readFile(cachePath, 'utf8');
+            previous = JSON.parse(raw) as Record<string, number>;
+        } catch {
+            // first run or unreadable cache
+        }
+
+        const changed: string[] = [];
+        for (const [rel, bytes] of Object.entries(outputs)) {
+            if (previous[rel] !== bytes) {
+                changed.push(rel);
+            }
+        }
+        // Consider deletions as changes too
+        const removed = Object.keys(previous).filter((rel) => outputs[rel] === undefined);
+
+        if (changed.length + removed.length > 0) {
+            const list = changed.slice(0, diagMax).join(', ');
+            const omitted = changed.length > diagMax ? ` (+${changed.length - diagMax} more)` : '';
+            const removedInfo = removed.length > 0 ? `, removed=${removed.length}` : '';
+            diagnostics.push({
+                severity: 'info',
+                message: `[webstir-backend] ${mode}:changed ${changed.length} file(s): ${list}${omitted}${removedInfo}`
+            });
+        }
+
+        await writeFile(cachePath, JSON.stringify(outputs, null, 2), 'utf8');
+    } catch {
+        // ignore cache errors
+    }
+}
+
+async function persistAndDiffManifest(
+    workspaceRoot: string,
+    manifest: ModuleManifest,
+    env: Record<string, string | undefined>,
+    diagnostics: ModuleDiagnostic[]
+): Promise<void> {
+    try {
+        const diagMax = (() => {
+            const raw = env?.WEBSTIR_BACKEND_DIAG_MAX;
+            const n = typeof raw === 'string' ? parseInt(raw, 10) : NaN;
+            return Number.isFinite(n) && n > 0 ? n : 50;
+        })();
+        const webstirDir = path.join(workspaceRoot, '.webstir');
+        const cachePath = path.join(webstirDir, 'backend-manifest-digest.json');
+        await mkdir(webstirDir, { recursive: true });
+
+        const routeKeys = Array.isArray(manifest.routes)
+            ? (manifest.routes as any[]).map((r) => `${(r.method ?? '').toUpperCase()} ${r.path ?? ''}`)
+            : [];
+        const viewPaths = Array.isArray(manifest.views)
+            ? (manifest.views as any[]).map((v) => `${v.path ?? ''}`)
+            : [];
+        const caps = Array.isArray(manifest.capabilities) ? manifest.capabilities : [];
+
+        type Digest = { routes: string[]; views: string[]; capabilities: string[] };
+        let previous: Digest | undefined;
+        try {
+            const raw = await readFile(cachePath, 'utf8');
+            previous = JSON.parse(raw) as Digest;
+        } catch {
+            // first run; no diff
+        }
+
+        if (previous) {
+            const prevRoutes = new Set(previous.routes);
+            const prevViews = new Set(previous.views);
+            const nextRoutes = new Set(routeKeys);
+            const nextViews = new Set(viewPaths);
+
+            const addedRoutes: string[] = [];
+            const removedRoutes: string[] = [];
+            const addedViews: string[] = [];
+            const removedViews: string[] = [];
+
+            for (const r of nextRoutes) if (!prevRoutes.has(r)) addedRoutes.push(r);
+            for (const r of prevRoutes) if (!nextRoutes.has(r)) removedRoutes.push(r);
+            for (const v of nextViews) if (!prevViews.has(v)) addedViews.push(v);
+            for (const v of prevViews) if (!nextViews.has(v)) removedViews.push(v);
+
+            if (addedRoutes.length + removedRoutes.length + addedViews.length + removedViews.length > 0) {
+                const list = (items: string[]) => items.slice(0, diagMax).join(', ');
+                const routeDelta = `routes +${addedRoutes.length}/-${removedRoutes.length}`;
+                const viewDelta = `views +${addedViews.length}/-${removedViews.length}`;
+                let msg = `[webstir-backend] manifest changed: ${routeDelta}; ${viewDelta}`;
+                const details: string[] = [];
+                if (addedRoutes.length > 0) details.push(`added routes: ${list(addedRoutes)}`);
+                if (removedRoutes.length > 0) details.push(`removed routes: ${list(removedRoutes)}`);
+                if (addedViews.length > 0) details.push(`added views: ${list(addedViews)}`);
+                if (removedViews.length > 0) details.push(`removed views: ${list(removedViews)}`);
+                if (details.length > 0) {
+                    msg += ` — ${details.join(' | ')}`;
+                }
+                diagnostics.push({ severity: 'info', message: msg });
+            }
+        }
+
+        const digest: Digest = { routes: routeKeys, views: viewPaths, capabilities: caps };
+        await writeFile(cachePath, JSON.stringify(digest, null, 2), 'utf8');
+    } catch {
+        // ignore cache errors
+    }
+}
+
 async function getScaffoldAssets(): Promise<readonly ModuleAsset[]> {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const packageRoot = path.resolve(here, '..');
@@ -640,6 +995,18 @@ async function getScaffoldAssets(): Promise<readonly ModuleAsset[]> {
         {
             sourcePath: path.join(templatesRoot, 'index.ts'),
             targetPath: path.join('src', 'backend', 'index.ts')
+        },
+        {
+            sourcePath: path.join(templatesRoot, 'server', 'fastify.ts'),
+            targetPath: path.join('src', 'backend', 'server', 'fastify.ts')
+        },
+        {
+            sourcePath: path.join(templatesRoot, 'functions', 'hello', 'index.ts'),
+            targetPath: path.join('src', 'backend', 'functions', 'hello', 'index.ts')
+        },
+        {
+            sourcePath: path.join(templatesRoot, 'jobs', 'nightly', 'index.ts'),
+            targetPath: path.join('src', 'backend', 'jobs', 'nightly', 'index.ts')
         }
     ];
 }

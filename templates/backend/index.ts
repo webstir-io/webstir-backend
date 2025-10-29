@@ -1,11 +1,30 @@
-// Minimal typing to avoid requiring @types/node in fresh workspaces
-declare const process: any;
+// Minimal Node HTTP server for dev runner readiness
+import http from 'node:http';
 
 export async function start(): Promise<void> {
-  const apiPort = Number(process.env.API_PORT ?? 4000);
-  const webPort = Number(process.env.WEB_PORT ?? 5173);
+  const port = Number(process.env.PORT ?? 4000);
   const mode = process.env.NODE_ENV ?? 'development';
-  console.info(`[webstir-backend] start (mode=${mode}) api:${apiPort} web:${webPort}`);
+
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/health') {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    res.statusCode = 404;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ error: 'not_found' }));
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '0.0.0.0', () => resolve());
+  });
+
+  // Dev runner (webstir-dotnet) watches for this readiness line
+  console.info('API server running');
+  console.info(`[webstir-backend] mode=${mode} port=${port}`);
 }
 
 // Execute when launched directly: `node build/backend/index.js`

@@ -66,6 +66,30 @@ The provider expects a standard workspace layout and performs two steps:
 - `getScaffoldAssets()` — returns starter files to bootstrap a backend workspace:
   - `src/backend/tsconfig.json` (NodeNext, outDir `build/backend`)
   - `src/backend/index.ts` (minimal entry: logs ports and mode)
+  - `src/backend/server/fastify.ts` (optional Fastify server scaffold)
+
+### Fastify Scaffold (optional)
+
+If you prefer a Fastify-based server over the minimal Node HTTP sample:
+
+- Install Fastify in your workspace:
+  ```bash
+  npm i fastify
+  ```
+- Import and start it from your `src/backend/index.ts`:
+  ```ts
+  // src/backend/index.ts
+  import { start } from './server/fastify';
+  start().catch((err) => { console.error(err); process.exit(1); });
+  ```
+- Or run it directly after a build:
+  ```bash
+  node build/backend/server/fastify.js
+  ```
+
+Note: The package’s smoke test temporarily installs Fastify only to type‑check the optional scaffold. Normal users do not need Fastify unless they choose to use this server. In CI or offline environments, set `WEBSTIR_BACKEND_SMOKE_FASTIFY=skip` to bypass the Fastify install and type‑check.
+
+When present, the Fastify scaffold will also attempt to auto‑mount any compiled module routes it finds under `build/backend/module(.js)`. Export your module definition as `module`, `moduleDefinition`, or the `default` export from `src/backend/module.ts` and build; the server will attach handlers using the route metadata.
 
 ### Module Manifest Integration
 
@@ -221,8 +245,16 @@ MIT © Webstir
 Start incremental builds with type-checking in the background:
 
 ```bash
-npm run watch
+npm run dev           # type-check + transpile on change
+npm run dev:fast      # faster DX: skip tsc in watch
 ```
+
+Notes
+- Set `WEBSTIR_BACKEND_DIAG_MAX=<n>` to cap how many esbuild diagnostics print per rebuild (default: 20 in standalone watch, 50 in provider builds invoked by the orchestrator).
+- Publish still enforces `tsc --noEmit` even if you skip type-checking in watch.
+- After each rebuild you’ll see concise summaries and a manifest glance, for example:
+  - `watch:esbuild 0 error(s), N warning(s) in X ms`
+- `watch:manifest routes=N views=M [capabilities]`
 
 Or programmatically:
 
@@ -237,3 +269,19 @@ const handle = await startBackendWatch({
 // later
 await handle.stop();
 ```
+
+### Functions & Jobs (scaffolding)
+
+The provider ships example entries you can copy into a fresh workspace:
+
+- `src/backend/functions/hello/index.ts` — a simple function entry
+- `src/backend/jobs/nightly/index.ts` — a simple job entry
+
+If you use `getScaffoldAssets()` programmatically, these templates are included alongside `tsconfig.json` and `index.ts`.
+
+### Dev runner readiness
+
+- The backend template listens on `process.env.PORT` (default `4000`) and logs `API server running` when ready.
+- The orchestrator's dev server waits for that readiness line and proxies `/api/*` to your Node server.
+- A basic `GET /api/health` endpoint is included for quick checks.
+- If you switch to a framework (e.g., Fastify), keep the same behavior: listen on `process.env.PORT` and print `API server running` once the server is listening.
