@@ -132,7 +132,8 @@ export const backendProvider: ModuleProvider = {
             });
         }
 
-        const artifacts = await collectArtifacts(paths.buildRoot);
+        const includePublishSourcemaps = mode === 'publish' && shouldEmitPublishSourcemaps(options.env ?? {});
+        const artifacts = await collectArtifacts(paths.buildRoot, includePublishSourcemaps);
         const moduleManifest = await loadWorkspaceModuleManifest(options.workspaceRoot, paths.buildRoot, entryPoints, diagnostics);
         const manifest = createManifest(paths.buildRoot, artifacts, diagnostics, moduleManifest);
 
@@ -185,16 +186,26 @@ function normalizeMode(rawMode: unknown): 'build' | 'publish' | 'test' {
     return 'build';
 }
 
-async function collectArtifacts(buildRoot: string): Promise<ModuleArtifact[]> {
-    const matches = await glob('**/*.js', {
-        cwd: buildRoot,
-        nodir: true,
-        dot: false
-    });
+async function collectArtifacts(buildRoot: string, includeSourceMaps: boolean): Promise<ModuleArtifact[]> {
+    const patterns = ['**/*.js'];
+    if (includeSourceMaps) {
+        patterns.push('**/*.js.map');
+    }
+    const matches = new Set<string>();
+    for (const pattern of patterns) {
+        const files = await glob(pattern, {
+            cwd: buildRoot,
+            nodir: true,
+            dot: false
+        });
+        for (const relativePath of files) {
+            matches.add(relativePath);
+        }
+    }
 
-    return matches.map<ModuleArtifact>((relativePath) => ({
+    return Array.from(matches).map<ModuleArtifact>((relativePath) => ({
         path: path.join(buildRoot, relativePath),
-        type: 'bundle'
+        type: relativePath.endsWith('.map') ? 'asset' : 'bundle'
     }));
 }
 
@@ -535,6 +546,15 @@ function shouldTypeCheck(mode: 'build' | 'publish' | 'test', env: Record<string,
     return true;
 }
 
+function shouldEmitPublishSourcemaps(env: Record<string, string | undefined>): boolean {
+    const flag = env?.WEBSTIR_BACKEND_SOURCEMAPS;
+    if (typeof flag !== 'string') {
+        return false;
+    }
+    const normalized = flag.trim().toLowerCase();
+    return normalized === 'on' || normalized === 'true' || normalized === '1' || normalized === 'yes';
+}
+
 type Severity = 'info' | 'warn' | 'error';
 
 function normalizeLogLevel(value: unknown): Severity {
@@ -586,6 +606,7 @@ async function runEsbuild(options: BuildOptions): Promise<Record<string, number>
         'process.env.NODE_ENV': JSON.stringify(nodeEnv)
     };
 
+    const emitPublishSourcemaps = isProduction && shouldEmitPublishSourcemaps(env);
     const start = performance.now();
     try {
         const MAX_PRINT = 50;
@@ -604,7 +625,7 @@ async function runEsbuild(options: BuildOptions): Promise<Record<string, number>
                 target: 'node20',
                 format: 'esm',
                 minify: true,
-                sourcemap: false,
+                sourcemap: emitPublishSourcemaps,
                 legalComments: 'none',
                 outdir: buildRoot,
                 outbase: sourceRoot,
@@ -808,6 +829,7 @@ async function buildModuleDefinition(options: ModuleDefinitionBuildOptions): Pro
 
     const isProduction = mode === 'publish';
     const nodeEnv = env?.NODE_ENV ?? (isProduction ? 'production' : 'development');
+    const emitPublishSourcemaps = isProduction && shouldEmitPublishSourcemaps(env ?? {});
     const define: Record<string, string> = {
         'process.env.NODE_ENV': JSON.stringify(nodeEnv)
     };
@@ -819,7 +841,7 @@ async function buildModuleDefinition(options: ModuleDefinitionBuildOptions): Pro
             platform: 'node',
             target: 'node20',
             format: 'esm',
-            sourcemap: !isProduction,
+            sourcemap: isProduction ? emitPublishSourcemaps : true,
             outdir: buildRoot,
             outbase: sourceRoot,
             entryNames: '[dir]/[name]',

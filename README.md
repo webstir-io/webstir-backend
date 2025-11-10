@@ -233,6 +233,7 @@ CI notes
 
 Dev tips
 - Fast iteration: set `WEBSTIR_BACKEND_TYPECHECK=skip` to bypass type-checking during `build`/`test` mode. Type-checks always run for `publish`.
+- Publish sourcemaps: set `WEBSTIR_BACKEND_SOURCEMAPS=on` (before `webstir publish` or provider builds) to bundle `.js.map` files alongside the minified output. The maps are excluded by default to keep bundle sizes lean.
 - **`TypeScript config not found` warning** — ensure `src/backend/tsconfig.json` exists.
 - **`Backend TypeScript compilation failed`** — inspect diagnostics (stderr/stdout captured in the manifest) and rerun `tsc -p`.
 - **No backend entry point found** — confirm `build/backend/index.js` exists after compilation or adjust the build output.

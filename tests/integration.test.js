@@ -77,3 +77,30 @@ test('publish mode bundles output and manifest has entry', async () => {
 
   assert.ok(result.manifest.entryPoints.length >= 1);
 });
+
+test('publish mode emits sourcemaps when opt-in flag is set', async () => {
+  const workspace = await createTempWorkspace();
+  const assets = await backendProvider.getScaffoldAssets();
+  for (const asset of assets) {
+    if (!asset.targetPath.endsWith(path.join('backend', 'index.ts'))) continue;
+    const target = path.join(workspace, asset.targetPath);
+    await copyFile(asset.sourcePath, target);
+  }
+
+  const bin = getLocalBinPath();
+  const env = {
+    WEBSTIR_MODULE_MODE: 'publish',
+    WEBSTIR_BACKEND_SOURCEMAPS: 'on',
+    PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+  };
+
+  const result = await backendProvider.build({ workspaceRoot: workspace, env, incremental: false });
+
+  const buildRoot = path.join(workspace, 'build', 'backend');
+  const mapFile = path.join(buildRoot, 'index.js.map');
+  assert.equal(fssync.existsSync(mapFile), true, 'expected build/backend/index.js.map to exist');
+  assert.ok(
+    result.artifacts.some((artifact) => artifact.path.endsWith('index.js.map') && artifact.type === 'asset'),
+    'expected index.js.map to be included as an asset artifact'
+  );
+});
