@@ -65,12 +65,13 @@ The provider expects a standard workspace layout and performs two steps:
 - `build(options)` — type‑checks with `tsc --noEmit`, then runs esbuild. In `build`/`test` mode it transpiles without bundling; in `publish` it bundles workspace code, externalizes `node_modules`, minifies, strips comments, and defines `NODE_ENV=production`. Artifacts are gathered and a manifest describing entry points, diagnostics, and the module contract manifest is returned.
 - `getScaffoldAssets()` — returns starter files to bootstrap a backend workspace:
   - `src/backend/tsconfig.json` (NodeNext, outDir `build/backend`)
-  - `src/backend/index.ts` (minimal entry: logs ports and mode)
+  - `src/backend/index.ts` (built-in HTTP server with `/api/health`, readiness logs, and automatic module route mounting)
+  - `src/backend/module.ts` (optional manifest + handler example the server loads automatically)
   - `src/backend/server/fastify.ts` (optional Fastify server scaffold)
 
 ### Fastify Scaffold (optional)
 
-If you prefer a Fastify-based server over the minimal Node HTTP sample:
+The default HTTP server handles `/api/health`, readiness logging, and auto-mounts the compiled `module.ts` handlers. If you prefer Fastify’s plugin ecosystem or need advanced routing features, you can swap the entry for the Fastify scaffold:
 
 - Install Fastify in your workspace:
   ```bash
@@ -184,6 +185,56 @@ export const module = createModule({
 
 When `npm run build` completes, the provider detects `build/backend/module.js`, hydrates the manifest with the `routes` metadata above, and returns it to the orchestrator alongside the compiled entry points.
 
+#### Module Definition Only Example
+
+If you prefer to skip `createModule()` during early development, you can export a simple object from `module.ts` and the provider will still merge its manifest metadata:
+
+```ts
+// src/backend/module.ts
+export const module = {
+  manifest: {
+    contractVersion: '1.0.0',
+    name: '@demo/simple-module',
+    version: '0.1.0',
+    kind: 'backend',
+    capabilities: ['search'],
+    routes: [{ method: 'GET', path: '/simple' }]
+  }
+};
+```
+
+## Backend Testing Harness
+
+Backend route tests can now launch the compiled server directly through the `@webstir-io/webstir-backend/testing` entry point. Import the helper inside your compiled backend tests (for example under `src/backend/tests/**`) and wrap each suite with `backendTest()`:
+
+```ts
+import { assert } from '@webstir-io/webstir-testing';
+import { backendTest } from '@webstir-io/webstir-backend/testing';
+
+backendTest('health endpoint responds', async (ctx) => {
+  const response = await ctx.request('/api/health');
+  const body = await response.json();
+  assert.equal(body.ok, true, 'Expected health endpoint to return { ok: true }');
+});
+```
+
+The harness:
+
+- Spins up `build/backend/index.js` (or a custom entry via `WEBSTIR_BACKEND_TEST_ENTRY`) with the same env wiring used during builds.
+- Waits for the readiness log (`API server running` by default) before running your assertions.
+- Exposes the hydrated `ModuleManifest` via `ctx.manifest` and provides a `request()` helper that targets the running server.
+- Shuts the server down once the backend runtime finishes so `webstir test` / `webstir watch` can continue without orphaned processes.
+
+Environment variables such as `WEBSTIR_BACKEND_TEST_PORT`, `WEBSTIR_BACKEND_TEST_READY`, and `WEBSTIR_BACKEND_TEST_MANIFEST` let you customize the port, readiness text, and manifest path when the defaults do not fit.
+
+This keeps your manifest co-located with runtime code while the provider handles validation and hydration.
+
+### Environment Management
+
+- `src/backend/env.ts` loads `.env.local` (if present) followed by `.env`, merges values into `process.env`, and exposes a typed `loadEnv()` helper.
+- A `.env.example` file is scaffolded at the workspace root—copy it to `.env`/`.env.local`, fill in secrets (e.g., `API_BASE_URL`, `DATABASE_URL`, `JWT_SECRET`), and adjust `loadEnv()` to require the variables your backend needs.
+- The default HTTP server (and Fastify scaffold) calls `loadEnv()` before binding, so the same config is available inside route handlers. Use `ctx.env.require('JWT_SECRET')` to fetch validated values.
+
 ### Multiple Entry Points
 The provider discovers these entries automatically (all optional):
 
@@ -194,6 +245,16 @@ The provider discovers these entries automatically (all optional):
 Outputs mirror the source layout under `build/backend/**/index.js`. The manifest lists relative `index.js` paths for all entries.
 
 Artifacts are returned as absolute paths so installers can copy or upload them. A missing `index.js` triggers a warning diagnostic.
+
+## Internal Helper Layout
+
+- `src/workspace.ts` — resolves source/build/test roots and normalizes `WEBSTIR_MODULE_MODE`.
+- `src/build/pipeline.ts` — runs type-check, esbuild (incremental + publish), and compiles optional `module.ts`.
+- `src/build/artifacts.ts` — collects build outputs (bundles/assets) and derives the manifest entry list.
+- `src/manifest/pipeline.ts` — hydrates the module manifest from `package.json` + `build/backend/module.js`, validating with the shared contract.
+- `src/cache/diff.ts` — records `.webstir` cache files for outputs/manifest digests and emits diff diagnostics.
+- `src/diagnostics/summary.ts` — common diagnostic helpers (log-level filtering, entry bucket summaries).
+- `src/scaffold/assets.ts` — backend scaffold definitions consumed by the provider and tests.
 
 ## NPM Scripts
 
@@ -256,6 +317,8 @@ Notes
 - After each rebuild you’ll see concise summaries and a manifest glance, for example:
   - `watch:esbuild 0 error(s), N warning(s) in X ms`
 - `watch:manifest routes=N views=M [capabilities]`
+- Cache parity: once esbuild finishes, watch mode writes the same `.webstir/backend-outputs.json` / `backend-manifest-digest.json` files and logs diff summaries (changed bundles, added/removed routes/views) just like non-watch builds. This keeps downstream tooling in sync during long-running dev sessions.
+- Set `WEBSTIR_BACKEND_CACHE_LOG=off` (or `false/0/skip`) to update the `.webstir` cache quietly without emitting diff diagnostics—handy for very chatty watch sessions.
 
 Or programmatically:
 

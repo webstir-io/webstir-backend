@@ -33,7 +33,9 @@ test('build mode produces transpiled output and manifest', async () => {
   const assets = await backendProvider.getScaffoldAssets();
   // Copy only the entry file to avoid requiring @types/node for type-check.
   for (const asset of assets) {
-    if (!asset.targetPath.endsWith(path.join('backend', 'index.ts'))) continue;
+    const isIndex = asset.targetPath.endsWith(path.join('backend', 'index.ts'));
+    const isEnv = asset.targetPath.endsWith(path.join('backend', 'env.ts'));
+    if (!isIndex && !isEnv) continue;
     const target = path.join(workspace, asset.targetPath);
     await copyFile(asset.sourcePath, target);
   }
@@ -41,6 +43,7 @@ test('build mode produces transpiled output and manifest', async () => {
   const bin = getLocalBinPath();
   const env = {
     WEBSTIR_MODULE_MODE: 'build',
+    WEBSTIR_BACKEND_TYPECHECK: 'skip',
     PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
   };
 
@@ -58,7 +61,9 @@ test('publish mode bundles output and manifest has entry', async () => {
   const workspace = await createTempWorkspace();
   const assets = await backendProvider.getScaffoldAssets();
   for (const asset of assets) {
-    if (!asset.targetPath.endsWith(path.join('backend', 'index.ts'))) continue;
+    const isIndex = asset.targetPath.endsWith(path.join('backend', 'index.ts'));
+    const isEnv = asset.targetPath.endsWith(path.join('backend', 'env.ts'));
+    if (!isIndex && !isEnv) continue;
     const target = path.join(workspace, asset.targetPath);
     await copyFile(asset.sourcePath, target);
   }
@@ -66,6 +71,7 @@ test('publish mode bundles output and manifest has entry', async () => {
   const bin = getLocalBinPath();
   const env = {
     WEBSTIR_MODULE_MODE: 'publish',
+    WEBSTIR_BACKEND_TYPECHECK: 'skip',
     PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
   };
 
@@ -82,7 +88,9 @@ test('publish mode emits sourcemaps when opt-in flag is set', async () => {
   const workspace = await createTempWorkspace();
   const assets = await backendProvider.getScaffoldAssets();
   for (const asset of assets) {
-    if (!asset.targetPath.endsWith(path.join('backend', 'index.ts'))) continue;
+    const isIndex = asset.targetPath.endsWith(path.join('backend', 'index.ts'));
+    const isEnv = asset.targetPath.endsWith(path.join('backend', 'env.ts'));
+    if (!isIndex && !isEnv) continue;
     const target = path.join(workspace, asset.targetPath);
     await copyFile(asset.sourcePath, target);
   }
@@ -91,6 +99,7 @@ test('publish mode emits sourcemaps when opt-in flag is set', async () => {
   const env = {
     WEBSTIR_MODULE_MODE: 'publish',
     WEBSTIR_BACKEND_SOURCEMAPS: 'on',
+    WEBSTIR_BACKEND_TYPECHECK: 'skip',
     PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
   };
 

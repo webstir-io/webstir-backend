@@ -2,6 +2,8 @@
 // Rename or import into your backend index to use.
 import Fastify from 'fastify';
 
+import { loadEnv } from '../env';
+
 async function tryLoadModuleDefinition(): Promise<any | undefined> {
   const candidates = ['../module.js', '../module/index.js'];
   for (const rel of candidates) {
@@ -80,8 +82,9 @@ function mountRoutes(app: import('fastify').FastifyInstance, definition: any) {
 }
 
 export async function start(): Promise<void> {
-  const port = Number(process.env.PORT ?? 4000);
-  const mode = process.env.NODE_ENV ?? 'development';
+  const env = loadEnv();
+  const port = env.PORT;
+  const mode = env.NODE_ENV;
 
   const app = Fastify({ logger: false });
 

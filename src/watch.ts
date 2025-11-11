@@ -2,41 +2,15 @@ import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
-import { pathToFileURL } from 'node:url';
 import { context as createEsbuildContext, type BuildContext, type BuildResult, type Plugin } from 'esbuild';
-import { glob } from 'glob';
 
-import type { ResolvedModuleWorkspace } from '@webstir-io/module-contract';
+import type { ModuleDiagnostic } from '@webstir-io/module-contract';
 
-function resolveWorkspacePaths(workspaceRoot: string): ResolvedModuleWorkspace {
-  return {
-    sourceRoot: path.join(workspaceRoot, 'src', 'backend'),
-    buildRoot: path.join(workspaceRoot, 'build', 'backend'),
-    testsRoot: path.join(workspaceRoot, 'src', 'backend', 'tests'),
-  };
-}
-
-function normalizeMode(rawMode: unknown): 'build' | 'publish' | 'test' {
-  if (typeof rawMode !== 'string') return 'build';
-  const normalized = rawMode.toLowerCase();
-  return normalized === 'publish' || normalized === 'test' ? normalized : 'build';
-}
-
-async function discoverEntryPoints(sourceRoot: string): Promise<string[]> {
-  const patterns = [
-    'index.{ts,tsx,js,mjs}',
-    'functions/*/index.{ts,tsx,js,mjs}',
-    'jobs/*/index.{ts,tsx,js,mjs}',
-  ];
-  const entries = new Set<string>();
-  for (const pattern of patterns) {
-    const matches = await glob(pattern, { cwd: sourceRoot, nodir: true, dot: false });
-    for (const rel of matches) {
-      entries.add(path.join(sourceRoot, rel));
-    }
-  }
-  return Array.from(entries);
-}
+import { collectOutputSizes, formatEsbuildMessage, shouldTypeCheck } from './build/pipeline.js';
+import { discoverEntryPoints } from './build/entries.js';
+import { loadBackendModuleManifest } from './manifest/pipeline.js';
+import { createCacheReporter } from './cache/reporters.js';
+import { normalizeMode, resolveWorkspacePaths } from './workspace.js';
 
 export interface WatchHandle {
   stop(): Promise<void>;
@@ -70,9 +44,9 @@ export async function startBackendWatch(options: StartWatchOptions): Promise<Wat
   console.info(`[webstir-backend] watch:start (${mode})`);
 
   // Start type-checker in watch mode (no emit) unless explicitly skipped for DX.
-  const skipTypecheck = typeof env.WEBSTIR_BACKEND_TYPECHECK === 'string' && env.WEBSTIR_BACKEND_TYPECHECK.toLowerCase() === 'skip';
+  const shouldRunTypecheck = shouldTypeCheck(mode, env);
   let tscProc: ChildProcess | undefined;
-  if (!skipTypecheck) {
+  if (shouldRunTypecheck) {
     const tscArgs = ['-p', tsconfigPath, '--noEmit', '--watch'];
     tscProc = spawn('tsc', tscArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -96,28 +70,6 @@ export async function startBackendWatch(options: StartWatchOptions): Promise<Wat
     console.info('[webstir-backend] watch: type-check skipped by WEBSTIR_BACKEND_TYPECHECK');
   }
 
-  // Esbuild context with incremental rebuilds
-  // Debounced manifest summary after builds
-  let summaryTimer: NodeJS.Timeout | undefined;
-  const scheduleSummary = () => {
-    if (summaryTimer) clearTimeout(summaryTimer);
-    summaryTimer = setTimeout(async () => {
-      try {
-        const summary = await summarizeManifest(paths.buildRoot);
-        if (summary) {
-          const { routes, views, capabilities } = summary;
-          const caps = (capabilities && capabilities.length > 0) ? ` [${capabilities.join(', ')}]` : '';
-          console.info(`[webstir-backend] watch:manifest routes=${routes} views=${views}${caps}`);
-        }
-      } catch {
-        // ignore summary errors; dev convenience
-      }
-    }, 100);
-  };
-
-  // Track outputs between rebuilds to report changed files
-  const previousOutputs = new Map<string, number>();
-
   const timingPlugin: Plugin = {
     name: 'webstir-watch-logger',
     setup(build) {
@@ -125,7 +77,7 @@ export async function startBackendWatch(options: StartWatchOptions): Promise<Wat
       build.onStart(() => {
         start = performance.now();
       });
-      build.onEnd((result: BuildResult) => {
+      build.onEnd(async (result: BuildResult) => {
         const end = performance.now();
         const warnCount = result.warnings?.length ?? 0;
         // errors is not in the typed result, but present at runtime
@@ -152,36 +104,37 @@ export async function startBackendWatch(options: StartWatchOptions): Promise<Wat
         }
         console.info(`[webstir-backend] watch:esbuild ${errorCount} error(s), ${warnCount} warning(s) in ${(end - start).toFixed(1)}ms`);
 
-        // Changed-files summary using metafile outputs
-        try {
-          const metafile: any = (result as any).metafile;
-          if (metafile && metafile.outputs) {
-            const outputs = metafile.outputs as Record<string, { bytes?: number }>;
-            const changed: string[] = [];
-            for (const [outPath, info] of Object.entries(outputs)) {
-              const bytes = typeof info.bytes === 'number' ? info.bytes : 0;
-              const prev = previousOutputs.get(outPath);
-              if (prev === undefined || prev !== bytes) {
-                changed.push(outPath);
-              }
+        if (errorCount === 0) {
+          const diagBuffer: ModuleDiagnostic[] = [];
+          const cacheReporter = createCacheReporter({
+            workspaceRoot,
+            buildRoot: paths.buildRoot,
+            env,
+            diagnostics: diagBuffer
+          });
+          try {
+            const metafile: any = (result as any).metafile;
+            if (metafile && metafile.outputs) {
+              const outputs = collectOutputSizes(metafile, paths.buildRoot);
+              await cacheReporter.diffOutputs(outputs, mode);
             }
-            previousOutputs.clear();
-            for (const [outPath, info] of Object.entries(outputs)) {
-              previousOutputs.set(outPath, typeof info.bytes === 'number' ? info.bytes : 0);
-            }
-            if (changed.length > 0) {
-              const list = changed
-                .map((p) => path.relative(paths.buildRoot, p))
-                .slice(0, diagMax)
-                .join(', ');
-              const omitted = changed.length > diagMax ? ` (+${changed.length - diagMax} more)` : '';
-              console.info(`[webstir-backend] watch:changed ${changed.length} file(s): ${list}${omitted}`);
+            const manifest = await loadBackendModuleManifest({
+              workspaceRoot,
+              buildRoot: paths.buildRoot,
+              entryPoints,
+              diagnostics: diagBuffer
+            });
+            await cacheReporter.diffManifest(manifest);
+          } catch {
+            // cache or manifest diff failure should not break watch
+          } finally {
+            for (const diag of diagBuffer) {
+              const logger =
+                diag.severity === 'error' ? console.error : diag.severity === 'warn' ? console.warn : console.info;
+              logger(diag.message);
             }
           }
-        } catch {
-          // ignore metafile parse errors in dev
         }
-        scheduleSummary();
       });
     },
   };
@@ -221,44 +174,4 @@ export async function startBackendWatch(options: StartWatchOptions): Promise<Wat
       console.info('[webstir-backend] watch:stopped');
     },
   };
-}
-
-function formatEsbuildMessage(msg: any): string {
-  const text = typeof msg?.text === 'string' ? msg.text : String(msg);
-  const loc = msg?.location;
-  if (loc && typeof loc.file === 'string') {
-    const position = typeof loc.line === 'number' ? `${loc.line}:${loc.column ?? 1}` : '1:1';
-    return `${loc.file}:${position} ${text}`;
-  }
-  return text;
-}
-
-async function summarizeManifest(buildRoot: string): Promise<{ routes: number; views: number; capabilities?: readonly string[] } | undefined> {
-  // Try to import a built module definition and extract counts
-  const candidates = [
-    path.join(buildRoot, 'module.js'),
-    path.join(buildRoot, 'module.mjs'),
-    path.join(buildRoot, 'module', 'index.js'),
-    path.join(buildRoot, 'module', 'index.mjs'),
-  ];
-  for (const fullPath of candidates) {
-    if (!existsSync(fullPath)) continue;
-    try {
-      const url = `${pathToFileURL(fullPath).href}?t=${Date.now()}`;
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-      const imported: any = await import(url);
-      const def = imported?.module ?? imported?.moduleDefinition ?? imported?.default ?? imported?.backendModule;
-      const manifest = def?.manifest as { routes?: unknown[]; views?: unknown[]; capabilities?: readonly string[] } | undefined;
-      if (manifest && (manifest.routes || manifest.views)) {
-        return {
-          routes: Array.isArray(manifest.routes) ? manifest.routes.length : 0,
-          views: Array.isArray(manifest.views) ? manifest.views.length : 0,
-          capabilities: manifest.capabilities,
-        };
-      }
-    } catch {
-      // ignore import errors during dev
-    }
-  }
-  return undefined;
 }
