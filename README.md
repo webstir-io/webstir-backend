@@ -65,9 +65,9 @@ The provider expects a standard workspace layout and performs two steps:
 - `build(options)` — type‑checks with `tsc --noEmit`, then runs esbuild. In `build`/`test` mode it transpiles without bundling; in `publish` it bundles workspace code, externalizes `node_modules`, minifies, strips comments, and defines `NODE_ENV=production`. Artifacts are gathered and a manifest describing entry points, diagnostics, and the module contract manifest is returned.
 - `getScaffoldAssets()` — returns starter files to bootstrap a backend workspace:
   - `src/backend/tsconfig.json` (NodeNext, outDir `build/backend`)
-  - `src/backend/index.ts` (built-in HTTP server with `/api/health`, readiness logs, and automatic module route mounting)
-  - `src/backend/module.ts` (optional manifest + handler example the server loads automatically)
-  - `src/backend/server/fastify.ts` (optional Fastify server scaffold)
+- `src/backend/index.ts` (built-in HTTP server with `/api/health`, `/healthz`, `/readyz`, manifest summaries, `x-request-id` propagation, and automatic module route mounting)
+- `src/backend/module.ts` (optional manifest + handler example the server loads automatically)
+- `src/backend/server/fastify.ts` (optional Fastify server scaffold)
 
 ### Fastify Scaffold (optional)
 
@@ -91,6 +91,69 @@ The default HTTP server handles `/api/health`, readiness logging, and auto-mount
 Note: The package’s smoke test temporarily installs Fastify only to type‑check the optional scaffold. Normal users do not need Fastify unless they choose to use this server. In CI or offline environments, set `WEBSTIR_BACKEND_SMOKE_FASTIFY=skip` to bypass the Fastify install and type‑check.
 
 When present, the Fastify scaffold will also attempt to auto‑mount any compiled module routes it finds under `build/backend/module(.js)`. Export your module definition as `module`, `moduleDefinition`, or the `default` export from `src/backend/module.ts` and build; the server will attach handlers using the route metadata.
+
+### Server runtime baseline
+
+The default `src/backend/index.ts` entry (and the optional Fastify scaffold) share the same runtime guarantees:
+
+- Route auto-mounting: any `module.ts` routes are compiled, logged, and attached on startup with manifest summaries (name, version, route count, capabilities).
+- Health probes: `/api/health` (for the orchestrator), `/healthz` (generic health), and `/readyz` (status + manifest summary). The CLI still waits for `API server running` before proxying requests.
+- Structured logging: every request gets a `pino` child logger that carries `requestId`, method, path, and route metadata. Logs emit as JSON so downstream tooling can parse them easily.
+- Request context: handlers receive `params`, `query`, `body`, `env`, `logger`, `request`, `reply`, `requestId`, and `now()` helpers that align with the `RequestContext` shape from `@webstir-io/module-contract`.
+- Request IDs: each response sets `x-request-id` and the context/logger include the same identifier so you can correlate logs.
+- Failure safety: handler exceptions are caught and surfaced as `{ error: 'internal_error' }` without tearing down the process.
+
+Stick with the built-in server while exploring the manifest helpers, then drop in the Fastify scaffold when you need its plugin ecosystem—the readiness + manifest wiring stays the same.
+
+### Secrets & auth adapters
+
+The backend template now ships a lightweight auth adapter so you can secure routes without wiring a full identity provider on day one:
+
+- **Environment-driven secrets** — populate `.env.local`/`.env` with `AUTH_JWT_SECRET` (required for bearer tokens), optional `AUTH_JWT_ISSUER` / `AUTH_JWT_AUDIENCE`, and comma/space-delimited `AUTH_SERVICE_TOKENS`. An example lives in `templates/backend/.env.example`.
+- **Bearer verification (HS256)** — when `AUTH_JWT_SECRET` is set, incoming `Authorization: Bearer <token>` headers are validated using HMAC-SHA256. Matching issuer/audience claims are enforced if you provide them. On success, `ctx.auth` includes `userId`, `email`, `scopes`, `roles`, and the raw claims payload.
+- **Service tokens** — internal callers can present `X-Service-Token` or `X-API-Key` values that match `AUTH_SERVICE_TOKENS`. Successful matches yield a `ctx.auth` context with the `service` scope so you can distinguish automated jobs from end users.
+- **Route ergonomics** — the module template now demonstrates gating access on `ctx.auth` and sets the `auth` capability in the manifest so downstream tooling knows the module expects identity context.
+- Install `pino` in your workspace (`npm install pino`) before running the scaffold; the template server imports it directly.
+
+This adapter is intentionally simple (HS256 only) but gives you a hook to plug in third-party IdPs: generate/sign tokens there, supply the shared secret via env, and the scaffold will populate `ctx.auth` for every route.
+
+### Observability & metrics
+
+- **Structured logs** — set `LOG_LEVEL` (default `info`) and optionally `LOG_SERVICE_NAME`. Every request emits a `request.completed` entry with status code and latency, plus rich metadata (`requestId`, method, route).
+- **Metrics** — enable with `METRICS_ENABLED=on` (default) and tune the rolling window via `METRICS_WINDOW` (number of recent durations to keep). The server tracks totals, error counts, average latency, and p95 latency.
+- **Endpoints** — `/metrics` returns the snapshot JSON; `/readyz` now includes the same metrics summary alongside manifest info so orchestrators and dashboards can consume a single payload.
+
+Install `pino` (and optionally `pino-pretty` for local formatting) in any workspace that uses the backend template; no other setup is required.
+
+### Jobs & scheduling
+
+- Define jobs via `webstir add-job <name> [--schedule "<cron>"] [--description "..."] [--priority <number|label>]`. The CLI creates `src/backend/jobs/<name>/index.ts` and records metadata in `webstir.module.jobs` in `package.json`.
+- The template provides a zero-config job loader (`src/backend/jobs/runtime.ts`) and a lightweight scheduler/runner (`build/backend/jobs/scheduler.js`). Use it to explore your jobs without wiring a full queue:
+
+```bash
+npm install pino                # already needed for the server
+npx tsx src/backend/jobs/scheduler.ts --list
+node build/backend/jobs/scheduler.js --job nightly
+node build/backend/jobs/scheduler.js --watch        # runs @hourly/@daily/@weekly/@reboot or rate(...) jobs
+```
+
+- `/readyz` surfaces manifest job counts, and `node build/backend/jobs/<name>/index.js` remains the quickest way to execute a single job in isolation.
+- Cron expressions recorded in the manifest are left untouched so you can plug them into your real scheduler (Temporal, Quartz, Cloud Scheduler, etc.). The built-in watcher supports the `@hourly`, `@daily`, `@weekly`, `@reboot`, and `rate(n units)` patterns for basic local loops; fall back to external tooling for full cron semantics.
+
+### Database & migrations
+
+- `DATABASE_URL` defaults to `file:./data/dev.sqlite`. Point it at Postgres (`postgres://...`) or another SQLite file as needed. Override the tracking table via `DATABASE_MIGRATIONS_TABLE` (defaults to `_webstir_migrations`).
+- `src/backend/db/connection.ts` exposes a tiny helper that connects to SQLite (via `better-sqlite3`) or Postgres (`pg`). Install whichever driver you need in your workspace: `npm install better-sqlite3` for the default flow or `npm install pg` for Postgres.
+- Drop SQL/TypeScript migrations under `src/backend/db/migrations/*.ts`, exporting `id`, `up`, and optional `down`.
+- Run migrations with:
+
+```bash
+npx tsx src/backend/db/migrate.ts --list
+npx tsx src/backend/db/migrate.ts               # apply pending migrations
+npx tsx src/backend/db/migrate.ts --down --steps 1
+```
+
+- The runner logs each migration, records history in `DATABASE_MIGRATIONS_TABLE`, and works the same way once compiled (`node build/backend/db/migrate.js ...`).
 
 ### Module Manifest Integration
 
@@ -347,5 +410,5 @@ If you use `getScaffoldAssets()` programmatically, these templates are included 
 
 - The backend template listens on `process.env.PORT` (default `4000`) and logs `API server running` when ready.
 - The orchestrator's dev server waits for that readiness line and proxies `/api/*` to your Node server.
-- A basic `GET /api/health` endpoint is included for quick checks.
-- If you switch to a framework (e.g., Fastify), keep the same behavior: listen on `process.env.PORT` and print `API server running` once the server is listening.
+- Health probes: `/api/health` (orchestrator compatibility) mirrors `/healthz`, while `/readyz` exposes the readiness state plus the current manifest summary for external monitors.
+- If you switch to a framework (e.g., Fastify), keep the same behavior: listen on `process.env.PORT`, expose the same endpoints, and print `API server running` once the server is listening.

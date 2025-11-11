@@ -137,8 +137,17 @@ test('scaffold assets expose core backend templates', async () => {
     path.join('src', 'backend', 'index.ts'),
     path.join('src', 'backend', 'module.ts'),
     path.join('src', 'backend', 'server', 'fastify.ts'),
+    path.join('src', 'backend', 'auth', 'adapter.ts'),
+    path.join('src', 'backend', 'observability', 'logger.ts'),
+    path.join('src', 'backend', 'observability', 'metrics.ts'),
     path.join('src', 'backend', 'functions', 'hello', 'index.ts'),
     path.join('src', 'backend', 'jobs', 'nightly', 'index.ts'),
+    path.join('src', 'backend', 'jobs', 'runtime.ts'),
+    path.join('src', 'backend', 'jobs', 'scheduler.ts'),
+    path.join('src', 'backend', 'db', 'connection.ts'),
+    path.join('src', 'backend', 'db', 'migrate.ts'),
+    path.join('src', 'backend', 'db', 'migrations', '0001-example.ts'),
+    path.join('src', 'backend', 'db', 'types.d.ts'),
     path.join('.env.example')
   ];
 

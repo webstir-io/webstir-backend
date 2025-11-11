@@ -1,5 +1,6 @@
 // Example job entry (scheduled by your orchestrator)
-// This is a simple placeholder; connect it to your scheduler of choice.
+// Update `webstir.module.jobs` in package.json to point to this job with a schedule, e.g.:
+// { "name": "nightly", "schedule": "0 0 * * *", "description": "Nightly maintenance" }
 
 export async function run(): Promise<void> {
   // Do some nightly maintenance work here
@@ -25,4 +26,3 @@ if (isMain) {
     process.exitCode = 1;
   });
 }
-

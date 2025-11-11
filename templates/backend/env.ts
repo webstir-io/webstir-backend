@@ -2,10 +2,38 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+
+export interface AuthSecrets {
+  jwtSecret?: string;
+  jwtIssuer?: string;
+  jwtAudience?: string;
+  serviceTokens: string[];
+}
+
+export interface LoggingConfig {
+  level: LogLevel;
+  serviceName: string;
+}
+
+export interface MetricsConfig {
+  enabled: boolean;
+  windowSize: number;
+}
+
+export interface DatabaseConfig {
+  url: string;
+  migrationsTable: string;
+}
+
 export interface AppEnv {
   NODE_ENV: string;
   PORT: number;
   API_BASE_URL: string;
+  auth: AuthSecrets;
+  logging: LoggingConfig;
+  metrics: MetricsConfig;
+  database: DatabaseConfig;
 }
 
 const ENV_FILES = ['.env.local', '.env'];
@@ -21,11 +49,33 @@ export function loadEnv(): AppEnv {
   const NODE_ENV = process.env.NODE_ENV ?? 'development';
   const PORT = parsePort(process.env.PORT ?? '4000');
   const API_BASE_URL = requireEnv('API_BASE_URL', 'http://localhost:4000');
+  const auth: AuthSecrets = {
+    jwtSecret: process.env.AUTH_JWT_SECRET,
+    jwtIssuer: process.env.AUTH_JWT_ISSUER,
+    jwtAudience: process.env.AUTH_JWT_AUDIENCE,
+    serviceTokens: parseList(process.env.AUTH_SERVICE_TOKENS)
+  };
+  const logging: LoggingConfig = {
+    level: parseLogLevel(process.env.LOG_LEVEL),
+    serviceName: process.env.LOG_SERVICE_NAME ?? 'backend-template'
+  };
+  const metrics: MetricsConfig = {
+    enabled: parseBoolean(process.env.METRICS_ENABLED, true),
+    windowSize: parsePositiveInt(process.env.METRICS_WINDOW, 200)
+  };
+  const database: DatabaseConfig = {
+    url: process.env.DATABASE_URL ?? 'file:./data/dev.sqlite',
+    migrationsTable: process.env.DATABASE_MIGRATIONS_TABLE ?? '_webstir_migrations'
+  };
 
   return {
     NODE_ENV,
     PORT,
-    API_BASE_URL
+    API_BASE_URL,
+    auth,
+    logging,
+    metrics,
+    database
   };
 }
 
@@ -73,7 +123,38 @@ function parsePort(value: string): number {
   return parsed;
 }
 
-function resolveWorkspaceRoot(): string {
+function parseList(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function parseLogLevel(value: string | undefined): LogLevel {
+  const normalized = (value ?? 'info').toLowerCase();
+  if (normalized === 'trace' || normalized === 'debug' || normalized === 'info' || normalized === 'warn' || normalized === 'error' || normalized === 'fatal') {
+    return normalized;
+  }
+  return 'info';
+}
+
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  const normalized = value.toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
+
+export function resolveWorkspaceRoot(): string {
   if (process.env.WORKSPACE_ROOT) {
     return process.env.WORKSPACE_ROOT;
   }

@@ -21,6 +21,19 @@ async function copyFile(src, dest) {
   await fs.copyFile(src, dest);
 }
 
+async function installPackages(workspace, packages, options = { dev: false }) {
+  if (!packages || packages.length === 0) return;
+  const args = ['install', '--silent', ...packages];
+  if (options.dev) {
+    args.push('-D');
+  }
+  await new Promise((resolve, reject) => {
+    const child = spawn('npm', args, { cwd: workspace, stdio: 'ignore' });
+    child.on('error', reject);
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`npm install failed (${code})`))));
+  });
+}
+
 async function main() {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'webstir-backend-smoke-'));
   const assets = await backendProvider.getScaffoldAssets();
@@ -63,14 +76,12 @@ async function main() {
   };
   await fs.writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8');
 
+  await installPackages(workspace, ['pino', 'better-sqlite3']);
+
   if (process.env.WEBSTIR_BACKEND_SMOKE_FASTIFY !== 'skip') {
     // Add optional Fastify dependency so the scaffold type-checks if present
     try {
-      await new Promise((resolve, reject) => {
-        const child = spawn('npm', ['install', '--silent', 'fastify', '-D', '@types/node@^20'], { cwd: workspace, stdio: 'ignore' });
-        child.on('error', reject);
-        child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`npm install failed (${code})`))));
-      });
+      await installPackages(workspace, ['fastify', '@types/node@^20'], { dev: true });
     } catch (err) {
       console.warn('[smoke] skipping Fastify install:', err);
     }
