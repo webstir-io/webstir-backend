@@ -29,6 +29,19 @@ test('env loader reads .env files and surfaces typed config', async () => {
   for (const asset of assets) {
     await copyFile(asset.sourcePath, path.join(workspace, asset.targetPath));
   }
+  await fs.writeFile(
+    path.join(workspace, 'package.json'),
+    JSON.stringify(
+      {
+        name: '@demo/env-loader',
+        version: '0.0.0',
+        type: 'module'
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
 
   const envContents = `NODE_ENV=development\nPORT=5055\nAPI_BASE_URL=https://api.example.com\n`;
   await fs.writeFile(path.join(workspace, '.env'), envContents, 'utf8');
@@ -36,6 +49,7 @@ test('env loader reads .env files and surfaces typed config', async () => {
   const env = {
     WEBSTIR_MODULE_MODE: 'build',
     WEBSTIR_BACKEND_TYPECHECK: 'skip',
+    NODE_OPTIONS: '--experimental-transform-types',
     PATH: `${getLocalBinPath()}${path.delimiter}${process.env.PATH ?? ''}`
   };
 

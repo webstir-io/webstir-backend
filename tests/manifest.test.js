@@ -43,6 +43,7 @@ test('manifest loader honors package overrides', async () => {
   const pkgJson = {
     name: '@demo/backend',
     version: '1.0.0',
+    type: 'module',
     webstir: {
       module: {
         contractVersion: '1.0.0',
@@ -74,7 +75,8 @@ test('manifest loader falls back to package name/version when no overrides prese
 
   const pkgJson = {
     name: '@demo/fallback',
-    version: '4.5.6'
+    version: '4.5.6',
+    type: 'module'
   };
   await fs.writeFile(path.join(workspace, 'package.json'), JSON.stringify(pkgJson, null, 2), 'utf8');
 
@@ -110,7 +112,7 @@ test('manifest loader merges compiled module definition metadata', async () => {
   await fs.writeFile(path.join(workspace, 'src', 'backend', 'module.ts'), moduleSource, 'utf8');
   await fs.writeFile(
     path.join(workspace, 'package.json'),
-    JSON.stringify({ name: '@demo/fallback-package', version: '0.0.1' }, null, 2),
+    JSON.stringify({ name: '@demo/fallback-package', version: '0.0.1', type: 'module' }, null, 2),
     'utf8'
   );
 
