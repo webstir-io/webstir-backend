@@ -22,6 +22,21 @@ async function copyFile(src, dest) {
   await fs.copyFile(src, dest);
 }
 
+async function hydrateBackendScaffold(workspace) {
+  const assets = await backendProvider.getScaffoldAssets();
+
+  for (const asset of assets) {
+    const normalized = asset.targetPath.replace(/\\/g, '/');
+    if (!normalized.includes('src/backend/')) {
+      continue;
+    }
+
+    const target = path.join(workspace, asset.targetPath);
+    await copyFile(asset.sourcePath, target);
+  }
+}
+
+
 function getLocalBinPath() {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const pkgRoot = path.resolve(here, '..');
@@ -30,15 +45,7 @@ function getLocalBinPath() {
 
 test('build mode produces transpiled output and manifest', async () => {
   const workspace = await createTempWorkspace();
-  const assets = await backendProvider.getScaffoldAssets();
-  // Copy only the entry file to avoid requiring @types/node for type-check.
-  for (const asset of assets) {
-    const isIndex = asset.targetPath.endsWith(path.join('backend', 'index.ts'));
-    const isEnv = asset.targetPath.endsWith(path.join('backend', 'env.ts'));
-    if (!isIndex && !isEnv) continue;
-    const target = path.join(workspace, asset.targetPath);
-    await copyFile(asset.sourcePath, target);
-  }
+  await hydrateBackendScaffold(workspace);
 
   const bin = getLocalBinPath();
   const env = {
@@ -59,14 +66,7 @@ test('build mode produces transpiled output and manifest', async () => {
 
 test('publish mode bundles output and manifest has entry', async () => {
   const workspace = await createTempWorkspace();
-  const assets = await backendProvider.getScaffoldAssets();
-  for (const asset of assets) {
-    const isIndex = asset.targetPath.endsWith(path.join('backend', 'index.ts'));
-    const isEnv = asset.targetPath.endsWith(path.join('backend', 'env.ts'));
-    if (!isIndex && !isEnv) continue;
-    const target = path.join(workspace, asset.targetPath);
-    await copyFile(asset.sourcePath, target);
-  }
+  await hydrateBackendScaffold(workspace);
 
   const bin = getLocalBinPath();
   const env = {
@@ -86,14 +86,7 @@ test('publish mode bundles output and manifest has entry', async () => {
 
 test('publish mode emits sourcemaps when opt-in flag is set', async () => {
   const workspace = await createTempWorkspace();
-  const assets = await backendProvider.getScaffoldAssets();
-  for (const asset of assets) {
-    const isIndex = asset.targetPath.endsWith(path.join('backend', 'index.ts'));
-    const isEnv = asset.targetPath.endsWith(path.join('backend', 'env.ts'));
-    if (!isIndex && !isEnv) continue;
-    const target = path.join(workspace, asset.targetPath);
-    await copyFile(asset.sourcePath, target);
-  }
+  await hydrateBackendScaffold(workspace);
 
   const bin = getLocalBinPath();
   const env = {

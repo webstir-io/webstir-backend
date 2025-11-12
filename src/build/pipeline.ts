@@ -155,12 +155,12 @@ async function runTypeCheck(tsconfigPath: string, env: Record<string, string | u
 }
 
 export function shouldTypeCheck(mode: BackendBuildMode, env: Record<string, string | undefined>): boolean {
-    if (mode === 'publish') {
-        return true;
-    }
     const flag = env?.WEBSTIR_BACKEND_TYPECHECK;
     if (typeof flag === 'string' && flag.toLowerCase() === 'skip') {
         return false;
+    }
+    if (mode === 'publish') {
+        return true;
     }
     return true;
 }
