@@ -20,11 +20,13 @@
 - `npm test` — runs Node test runner for backend tests (rarely used; keep green).
 - `npm run smoke` — exercises scaffold provisioning + build/publish + Fastify health check.
 - `npm run release` / `scripts/publish.sh` — bump version, run build/test/smoke, tag (release workflow publishes).
+  - The release script now auto-cleans failed attempts (it deletes the new tag and resets the version bump if a later step errors).
 
 ## Release Notes
 - Ensure clean git tree and passing build/smoke before running `scripts/publish.sh`.
 - Publish script intentionally does not call `npm publish`; GitHub Actions release workflow handles publishing from tags.
 - After publishing, sync versions via `webstir-dotnet/Utilities/scripts/sync-framework-versions.sh`.
+- Published tarball now includes `src/`; keep it build-ready (no stray dev-only files) since downstream repos rebuild from the package contents.
 
 ## Implementation Hints
 - Provider build flow: tsc (optional via `WEBSTIR_BACKEND_TYPECHECK=skip`), discover entry points, esbuild transpile/bundle, manifest hydration.
@@ -41,4 +43,3 @@
 - README: usage, manifest integration, Fastify scaffold instructions.
 - Publish script: `scripts/publish.sh` (check when updating release flow).
 - Smoke script: `scripts/smoke.mjs` (includes Fastify toggles and checks).
-

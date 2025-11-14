@@ -41,7 +41,8 @@
   },
   "files": [
     "dist",
-    "templates"
+    "templates",
+    "src"
   ],
   "engines": {
     "node": ">=20.18.1"
