@@ -26,7 +26,7 @@
 - Ensure clean git tree and passing build/smoke before running `scripts/publish.sh`.
 - Publish script intentionally does not call `npm publish`; GitHub Actions release workflow handles publishing from tags.
 - After publishing, sync versions via `webstir-dotnet/Utilities/scripts/sync-framework-versions.sh`.
-- Published tarball now includes `src/`; keep it build-ready (no stray dev-only files) since downstream repos rebuild from the package contents.
+- Published tarball now includes `src/`, `scripts/`, `tests/`, `tsconfig.json`, and `package-lock.json`; keep them build-ready since downstream repos rebuild straight from the package.
 
 ## Implementation Hints
 - Provider build flow: tsc (optional via `WEBSTIR_BACKEND_TYPECHECK=skip`), discover entry points, esbuild transpile/bundle, manifest hydration.
