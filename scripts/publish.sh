@@ -69,6 +69,9 @@ main() {
   VERSION_TAG="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
   echo "› preparing ${pkg_name}@${pkg_version}"
 
+  echo "› npm install --package-lock-only"
+  npm install --package-lock-only
+
   echo "› npm run build"
   npm run build
 
