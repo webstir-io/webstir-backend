@@ -343,7 +343,6 @@ npm run smoke
 - Add tests under `tests/**/*.test.ts` and wire them into `npm test` once the backend runtime is ready.
 - Ensure CI runs `npm ci`, `npm run build`, and any smoke tests before publish.
 - Publishing targets GitHub Packages via `publishConfig.registry`.
-- Reference implementation: `examples/accounts/` demonstrates a ts-rest powered module exporting `createModule()` for provider hydration.
 - Use `npm run release -- <patch|minor|major|x.y.z>` to bump the version, build, test, run the smoke check, and publish via the bundled helper script.
 
 ## Troubleshooting

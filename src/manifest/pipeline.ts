@@ -35,10 +35,14 @@ export async function loadBackendModuleManifest(options: LoadManifestOptions): P
         const raw = await readFile(pkgPath, 'utf8');
         workspacePackage = JSON.parse(raw) as WorkspacePackageJson;
     } catch (error) {
-        diagnostics.push({
-            severity: 'warn',
-            message: `[webstir-backend] unable to read ${pkgPath}: ${(error as Error).message}. Using defaults.`
-        });
+        const err = error as NodeJS.ErrnoException;
+        // Missing package.json is expected in some temporary workspaces; avoid noisy warnings.
+        if (err.code !== 'ENOENT') {
+            diagnostics.push({
+                severity: 'warn',
+                message: `[webstir-backend] unable to read ${pkgPath}: ${err.message}. Using defaults.`
+            });
+        }
     }
 
     const moduleConfig = workspacePackage?.webstir?.module ?? {};
