@@ -2,6 +2,11 @@
 
 Backend build orchestration for Webstir workspaces. The package exposes a `ModuleProvider` that type‑checks with TypeScript, builds with esbuild, collects build artifacts, and returns diagnostics for the Webstir CLI and installers.
 
+## Status
+
+- Experimental provider for the Webstir ecosystem — APIs, defaults, and behavior may change between releases while things stabilize.
+- Not yet recommended for production workloads; treat it as a learning and exploration tool.
+
 ## Quick Start
 
 1. **Authenticate to GitHub Packages**
@@ -34,6 +39,13 @@ Backend build orchestration for Webstir workspaces. The package exposes a `Modul
    ```
 
 Requires Node.js **20.18.x** or newer.
+
+## Community & Support
+
+- Code of Conduct: https://github.com/webstir-io/.github/blob/main/CODE_OF_CONDUCT.md
+- Contributing guidelines: https://github.com/webstir-io/.github/blob/main/CONTRIBUTING.md
+- Security policy and disclosure process: https://github.com/webstir-io/.github/blob/main/SECURITY.md
+- Support expectations and contact channels: https://github.com/webstir-io/.github/blob/main/SUPPORT.md
 
 ## Workspace Layout
 
