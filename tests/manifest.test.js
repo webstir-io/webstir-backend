@@ -45,7 +45,7 @@ test('manifest loader honors package overrides', async () => {
     version: '1.0.0',
     type: 'module',
     webstir: {
-      module: {
+      moduleManifest: {
         contractVersion: '1.0.0',
         name: '@demo/custom',
         version: '2.0.0',
