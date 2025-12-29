@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/update-contract.sh [x.y.z|--latest] [--exact]
+Usage: scripts/update-contract.sh [x.y.z|--latest] [--exact] [--fast]
 
 Updates @webstir-io/module-contract (defaults to latest when no version is provided),
 installs deps, then builds and tests the backend package. Does NOT publish. If
@@ -15,6 +15,7 @@ Examples:
   scripts/update-contract.sh --latest       # explicit latest
   scripts/update-contract.sh 0.1.8          # specific version (caret range)
   scripts/update-contract.sh 0.1.8 --exact  # set exact version instead of ^range
+  scripts/update-contract.sh 0.1.8 --fast   # lockfile-only update; skip build/test
 EOF
   exit 1
 }
@@ -25,6 +26,7 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 main() {
   local ver=""
   local exact="false"
+  local fast="false"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -33,6 +35,9 @@ main() {
         ;;
       --exact)
         exact="true"
+        ;;
+      --fast)
+        fast="true"
         ;;
       -h|--help)
         usage ;;
@@ -76,7 +81,11 @@ main() {
   npm pkg set "dependencies.@webstir-io/module-contract=$spec"
 
   echo "› npm install (refresh lockfile)"
-  npm install --no-audit --no-fund
+  if [[ "$fast" == "true" ]]; then
+    npm install --package-lock-only --no-audit --no-fund --ignore-scripts
+  else
+    npm install --no-audit --no-fund
+  fi
 
   # Clarify versions in logs to avoid confusion with backend package version
   local backend_ver
@@ -86,17 +95,19 @@ main() {
   echo "› Backend package: @webstir-io/webstir-backend@${backend_ver}"
   echo "› Contract installed: @webstir-io/module-contract@${installed_contract}"
 
-  echo "› npm run build"
-  npm run build
+  if [[ "$fast" != "true" ]]; then
+    echo "› npm run build"
+    npm run build
 
-  if npm run | grep -q "^  test"; then
-    echo "› npm test"
-    npm test
-  fi
+    if npm run | grep -q "^  test"; then
+      echo "› npm test"
+      npm test
+    fi
 
-  if npm run | grep -q "^  smoke"; then
-    echo "› npm run smoke"
-    npm run smoke
+    if npm run | grep -q "^  smoke"; then
+      echo "› npm run smoke"
+      npm run smoke
+    fi
   fi
 
   echo
