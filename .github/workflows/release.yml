@@ -31,11 +31,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Clean
+        run: npm run clean
+
       - name: Build
         run: npm run build
 
       - name: Test
         run: npm test
+
+      - name: Smoke
+        run: npm run smoke
 
       - name: Publish package
         run: npm publish

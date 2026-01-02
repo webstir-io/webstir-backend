@@ -20,7 +20,6 @@
 - `npm test` — runs Node test runner for backend tests (rarely used; keep green).
 - `npm run smoke` — exercises scaffold provisioning + build/publish + Fastify health check.
 - `npm run release` / `scripts/publish.sh` — bump version, refresh package-lock, run build/test/smoke, tag (release workflow publishes).
-  - The release script now auto-cleans failed attempts (it deletes the new tag and resets the version bump if a later step errors).
 
 ## Release Notes
 - Ensure clean git tree and passing build/smoke before running `scripts/publish.sh`.

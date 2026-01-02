@@ -30,7 +30,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node -e \"const { spawnSync } = require('node:child_process'); const glob = require('glob'); const files = glob.sync('tests/**/*.test.js'); if (!files.length) { console.error('No backend test files found'); process.exit(1); } const result = spawnSync(process.execPath, ['--test', ...files], { stdio: 'inherit' }); process.exit(result.status ?? 1);\"",
+    "test": "node -e \"const { spawnSync } = require('node:child_process'); const glob = require('glob'); const files = glob.sync('tests/**/*.test.js'); if (!files.length) { console.error('No backend test files found'); process.exit(1); } const result = spawnSync(process.execPath, ['--test', ...files], { stdio: 'inherit' }); process.exit(result.status ?? 1);\"",
     "clean": "rm -rf dist",
     "prepare": "npm run build",
     "watch": "npm run build && node -e \"import('./dist/watch.js').then(m=>m.startBackendWatch({workspaceRoot:process.cwd(),env:{WEBSTIR_MODULE_MODE:'build'}}));\"",

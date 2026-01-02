@@ -346,16 +346,18 @@ The published package ships prebuilt JavaScript and type definitions in `dist/`.
 
 ```bash
 npm install
+npm run clean          # remove dist artifacts
 npm run build          # emits dist/
 npm run test           # runs unit/integration tests
-# Optional quick E2E
 npm run smoke
+# Release helper (bumps version, pushes tags to trigger release workflow)
+npm run release -- patch
 ```
 
 - Add tests under `tests/**/*.test.ts` and wire them into `npm test` once the backend runtime is ready.
-- Ensure CI runs `npm ci`, `npm run build`, and any smoke tests before publish.
+- Ensure CI runs `npm ci`, `npm run clean`, `npm run build`, `npm run test`, and `npm run smoke` before publish.
 - Publishing targets GitHub Packages via `publishConfig.registry`.
-- Use `npm run release -- <patch|minor|major|x.y.z>` to bump the version, build, test, run the smoke check, and publish via the bundled helper script.
+- Use `npm run release -- <patch|minor|major|x.y.z>` to bump the version, build, test, run the smoke check, and push tags to trigger the release workflow.
 
 ## Troubleshooting
 
@@ -364,7 +366,7 @@ npm run smoke
 - esbuild warnings/errors are surfaced as diagnostics with file locations when available.
 
 CI notes
-- Package CI runs build + tests on PRs and main; a smoke step runs on main only to exercise the end-to-end path quickly.
+- Package CI runs clean + build + tests + smoke on PRs and main.
 
 Dev tips
 - Fast iteration: set `WEBSTIR_BACKEND_TYPECHECK=skip` to bypass type-checking during `build`/`test` mode. Type-checks always run for `publish`.
