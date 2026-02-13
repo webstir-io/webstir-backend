@@ -10,8 +10,7 @@ Examples:
   scripts/publish.sh patch
   scripts/publish.sh 0.1.0
 
-The script requires a clean git worktree and an npm login to
-https://npm.pkg.github.com with write:packages access.
+The script requires a clean git worktree.
 
 By default, the script pushes the version bump commit and tag. To skip pushing,
 pass --no-push or set PUBLISH_NO_PUSH=1.

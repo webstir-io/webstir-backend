@@ -8,14 +8,11 @@ on:
 
 permissions:
   contents: read
-  packages: write
+  id-token: write
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    env:
-      NODE_AUTH_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
-      GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,10 +20,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.18.1'
+          node-version: '24'
           cache: npm
-          registry-url: https://npm.pkg.github.com
-          scope: '@webstir-io'
+          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: npm ci
@@ -44,4 +40,4 @@ jobs:
         run: npm run smoke
 
       - name: Publish package
-        run: npm publish
+        run: npm publish --provenance --access public
