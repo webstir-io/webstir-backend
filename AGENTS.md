@@ -6,7 +6,7 @@
 - Optimize for: correctness of build/watch flows, smoke reliability, lean diffs.
 
 ## Daily Workflow
-- Read `workspace-tools/AGENTS.md` first; rules here extend it for this repo.
+- Read `webstir-workspace/AGENTS.md` first; rules here extend it for this repo.
 - Default Node version: >= 20.18.x (matches package `engines` field).
 - Prefer TypeScript ESM; follow existing formatting (no trailing semicolons).
 - Use `npm run build` before committing TypeScript changes.
