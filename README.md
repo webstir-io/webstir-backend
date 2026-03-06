@@ -1,5 +1,12 @@
 # @webstir-io/webstir-backend
 
+> This repository is legacy and no longer the source of truth.
+> Active development has moved to the canonical Webstir monorepo:
+> [webstir-io/webstir](https://github.com/webstir-io/webstir)
+>
+> Package source location in the monorepo:
+> `packages/tooling/webstir-backend`
+
 Backend build orchestration for Webstir workspaces. The package exposes a `ModuleProvider` that type‑checks with TypeScript, builds with esbuild, collects build artifacts, and returns diagnostics for the Webstir CLI and installers.
 
 ## Status
